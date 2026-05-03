@@ -20,12 +20,13 @@ from typing import Any
 
 from agno.media import Image
 
-from doc_extractor import markdown_io, s3_io
+from doc_extractor import __version__, markdown_io, s3_io
 from doc_extractor.agents.classifier import create_classifier_agent
 from doc_extractor.agents.passport import create_passport_agent
 from doc_extractor.agents.payment_receipt import create_payment_receipt_agent
 from doc_extractor.agents.verifier import create_verifier_agent
 from doc_extractor.config.precedence import resolve_agent_config
+from doc_extractor.disagreement import record_disagreement
 from doc_extractor.pdf.converter import PdfMode, pdf_to_images
 from doc_extractor.prompts.loader import load_prompt
 from doc_extractor.schemas.base import Frontmatter
@@ -126,6 +127,7 @@ async def run(source_key: str) -> dict[str, Any]:
             "skipped": True,
             "doc_type": "",
             "verifier_audit": None,
+            "disagreement_key": None,
         }
 
     image = _build_image_for_source(source_key)
@@ -186,9 +188,24 @@ async def run(source_key: str) -> dict[str, Any]:
     md_text = markdown_io.render_to_md(extracted)
     s3_io.write_analysis(analysis_key, md_text)
 
+    # Story 3.9 — write a disagreement-queue entry when the verifier flagged
+    # ≥1 field as `disagree` (overall=="fail"). `uncertain` is NOT written:
+    # downstream surfaces it as advisory only. Non-PaymentReceipt runs have
+    # no verifier and therefore never produce a disagreement entry.
+    disagreement_key: str | None = None
+    if verifier_audit is not None and verifier_audit.overall == "fail":
+        disagreement_key = record_disagreement(
+            source_key=source_key,
+            primary=extracted,
+            verifier=verifier_audit,
+            status="disagreement",
+            extractor_version=__version__,
+        )
+
     return {
         "analysis_key": analysis_key,
         "skipped": False,
         "doc_type": classification.doc_type,
         "verifier_audit": verifier_audit.model_dump() if verifier_audit else None,
+        "disagreement_key": disagreement_key,
     }

@@ -118,3 +118,23 @@ def write_analysis(key: str, body: str | bytes) -> None:
         Body=payload,
         ContentType="text/markdown; charset=utf-8",
     )
+
+
+def write_disagreement(key: str, body: str | bytes) -> None:
+    """Write a disagreement-queue JSON entry to the analysis bucket.
+
+    Lives alongside ``write_analysis`` because the disagreement queue shares
+    the same bucket — only the key prefix differs (``disagreements/...``).
+    Bucket layout (Decision 1):
+
+    - ``<source_key>.md``                       — extracted analysis (write_analysis).
+    - ``disagreements/<source_key>.json``       — disagreement-queue entry.
+    - ``corrections/<source_key>.md``           — human corrections overlay (Story 6.2).
+    """
+    payload = body.encode("utf-8") if isinstance(body, str) else body
+    _get_client().put_object(
+        Bucket=ANALYSIS_BUCKET,
+        Key=key,
+        Body=payload,
+        ContentType="application/json; charset=utf-8",
+    )

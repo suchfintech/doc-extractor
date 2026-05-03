@@ -98,6 +98,7 @@ async def test_happy_path_writes_passport_markdown(
         "skipped": False,
         "doc_type": "Passport",
         "verifier_audit": None,
+        "disagreement_key": None,
     }
     patched_io["head"].assert_called_once_with(EXPECTED_ANALYSIS_KEY)
     patched_io["presign"].assert_called_once()
@@ -136,6 +137,7 @@ async def test_head_skip_short_circuits_before_provider(
         "skipped": True,
         "doc_type": "",
         "verifier_audit": None,
+        "disagreement_key": None,
     }
     patched_io["head"].assert_called_once_with(EXPECTED_ANALYSIS_KEY)
     patched_io["presign"].assert_not_called()
@@ -355,3 +357,120 @@ async def test_verifier_not_called_when_classification_is_other(
 
     assert verifier_arun.await_count == 0
     patched_io["write"].assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Story 3.9 — disagreement-queue write triggered by overall=="fail"
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def captured_disagreement_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Capture record_disagreement kwargs without writing to S3."""
+    calls: list[dict[str, Any]] = []
+
+    def fake_record(**kwargs: Any) -> str:
+        calls.append(kwargs)
+        return f"disagreements/{kwargs['source_key']}.json"
+
+    monkeypatch.setattr(vision_path, "record_disagreement", fake_record)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_disagreement_written_when_verifier_overall_is_fail(
+    patched_io: dict[str, MagicMock],
+    captured_disagreement_calls: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    classifier_agent, _ = _make_async_agent(
+        Classification(doc_type="PaymentReceipt", jurisdiction="CN")
+    )
+    pr_agent, _ = _make_async_agent(_payment_receipt_fixture())
+    verifier_agent, _ = _make_async_agent(_verifier_audit_fixture("fail"))
+
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_payment_receipt_agent", lambda: pr_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+
+    result = await vision_path.run(PR_SOURCE_KEY)
+
+    assert len(captured_disagreement_calls) == 1
+    call = captured_disagreement_calls[0]
+    assert call["source_key"] == PR_SOURCE_KEY
+    assert isinstance(call["primary"], PaymentReceipt)
+    assert call["primary"].receipt_debit_account_name == "张三"
+    assert isinstance(call["verifier"], VerifierAudit)
+    assert call["verifier"].overall == "fail"
+    assert call["status"] == "disagreement"
+
+    # And the result dict surfaces the disagreement bucket key.
+    assert result["disagreement_key"] == f"disagreements/{PR_SOURCE_KEY}.json"
+
+
+@pytest.mark.asyncio
+async def test_disagreement_NOT_written_when_verifier_overall_is_pass(
+    patched_io: dict[str, MagicMock],
+    captured_disagreement_calls: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    classifier_agent, _ = _make_async_agent(
+        Classification(doc_type="PaymentReceipt", jurisdiction="CN")
+    )
+    pr_agent, _ = _make_async_agent(_payment_receipt_fixture())
+    verifier_agent, _ = _make_async_agent(_verifier_audit_fixture("pass"))
+
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_payment_receipt_agent", lambda: pr_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+
+    result = await vision_path.run(PR_SOURCE_KEY)
+
+    assert captured_disagreement_calls == []
+    assert result["disagreement_key"] is None
+
+
+@pytest.mark.asyncio
+async def test_disagreement_NOT_written_when_verifier_overall_is_uncertain(
+    patched_io: dict[str, MagicMock],
+    captured_disagreement_calls: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`uncertain` is NOT a fail — Story 3.9 leaves it as advisory only.
+    Downstream review can still flag it; we don't auto-queue it."""
+    classifier_agent, _ = _make_async_agent(
+        Classification(doc_type="PaymentReceipt", jurisdiction="CN")
+    )
+    pr_agent, _ = _make_async_agent(_payment_receipt_fixture())
+    verifier_agent, _ = _make_async_agent(_verifier_audit_fixture("uncertain"))
+
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_payment_receipt_agent", lambda: pr_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+
+    result = await vision_path.run(PR_SOURCE_KEY)
+
+    assert captured_disagreement_calls == []
+    assert result["disagreement_key"] is None
+    assert result["verifier_audit"]["overall"] == "uncertain"
+
+
+@pytest.mark.asyncio
+async def test_disagreement_NOT_written_for_passport_route(
+    patched_io: dict[str, MagicMock],
+    captured_disagreement_calls: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No verifier runs on Passport, so no disagreement write is possible."""
+    classifier_agent, _ = _make_async_agent(
+        Classification(doc_type="Passport", jurisdiction="NZ")
+    )
+    passport_agent, _ = _make_async_agent(_passport_fixture())
+
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_passport_agent", lambda: passport_agent)
+
+    result = await vision_path.run(SOURCE_KEY)
+
+    assert captured_disagreement_calls == []
+    assert result["disagreement_key"] is None
