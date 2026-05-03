@@ -15,8 +15,16 @@
     "body_sha256": "5b5279f1f5654fcb915d7929389356c6161d83b6ba8c640adc9e3756b696d3b5",
     "version": "0.1.0"
   },
+  "company_extract.md": {
+    "body_sha256": "2bff3f902d791bbe6c75ca6a8a1abd26058294251354a59cffe133347c789fe8",
+    "version": "0.1.0"
+  },
   "driver_licence.md": {
     "body_sha256": "12414858d055a1a94b0d659e3b5f397d53d6b23d9fe4210623ad9b54ceb38721",
+    "version": "0.1.0"
+  },
+  "entity_ownership.md": {
+    "body_sha256": "e5d00142abb08f841aa16ea97fb649819105f4982088c905a37a458cf406363e",
     "version": "0.1.0"
   },
   "national_id.md": {

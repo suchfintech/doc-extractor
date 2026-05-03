@@ -16,11 +16,14 @@ from doc_extractor.schemas import (
     ApplicationForm,
     BankAccountConfirmation,
     BankStatement,
+    CompanyExtract,
     DriverLicence,
+    EntityOwnership,
     NationalID,
     Passport,
     PaymentReceipt,
     PEP_Declaration,
+    UltimateBeneficialOwner,
     VerificationReport,
     Visa,
 )
@@ -895,3 +898,179 @@ def test_bank_documents_share_bank_doc_base_field_order() -> None:
         "confirmation_date",
         "confirmation_authority",
     ]
+
+
+# --------------------------------------------------------------------------
+# Story 5.3 — Epic 5 entity documents (list[str] + nested-object schemas)
+# --------------------------------------------------------------------------
+
+# CompanyExtract — NZ Companies Office shape with three directors and two
+# shareholders. The list elements render as YAML block-sequence items
+# (`- Alice Wong`); registration_number is quoted because PyYAML treats a
+# bare 7-digit string as an int. The snapshot pins both behaviours.
+CANONICAL_COMPANY_EXTRACT = CompanyExtract(
+    extractor_version="0.1.0",
+    extraction_provider="anthropic",
+    extraction_model="claude-sonnet-4-6-20260101",
+    extraction_timestamp="2026-05-03T12:00:00Z",
+    prompt_version="company_extract@0.1.0",
+    doc_type="CompanyExtract",
+    doc_subtype="",
+    jurisdiction="NZ",
+    name_latin="",
+    name_cjk="",
+    company_name="Acme Holdings Limited",
+    registration_number="1234567",
+    incorporation_date="2018-04-15",
+    registered_address="123 Queen Street, Auckland 1010, New Zealand",
+    directors=["Alice Wong", "Bob Chen", "Charlie Smith"],
+    shareholders=["Acme Group Ltd", "Beta Capital"],
+)
+
+EXPECTED_COMPANY_EXTRACT_YAML = """\
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T12:00:00Z'
+prompt_version: company_extract@0.1.0
+doc_type: CompanyExtract
+doc_subtype: ''
+jurisdiction: NZ
+name_latin: ''
+name_cjk: ''
+company_name: Acme Holdings Limited
+registration_number: '1234567'
+incorporation_date: '2018-04-15'
+registered_address: 123 Queen Street, Auckland 1010, New Zealand
+directors:
+- Alice Wong
+- Bob Chen
+- Charlie Smith
+shareholders:
+- Acme Group Ltd
+- Beta Capital
+"""
+
+
+def _dump_ce(ce: CompanyExtract) -> str:
+    return yaml.safe_dump(ce.model_dump(), allow_unicode=True, sort_keys=False)
+
+
+def test_canonical_company_extract_yaml_is_byte_stable() -> None:
+    assert _dump_ce(CANONICAL_COMPANY_EXTRACT) == EXPECTED_COMPANY_EXTRACT_YAML
+
+
+def test_company_extract_distinguishes_null_list_from_empty_list() -> None:
+    """`directors=None` (not extracted) must serialise differently from
+    `directors=[]` (explicitly zero)."""
+    not_extracted = CompanyExtract(
+        extractor_version="0.1.0",
+        extraction_provider="anthropic",
+        extraction_model="claude-sonnet-4-6-20260101",
+        extraction_timestamp="2026-05-03T12:00:00Z",
+        prompt_version="company_extract@0.1.0",
+        doc_type="CompanyExtract",
+        company_name="X",
+        directors=None,
+    )
+    explicitly_zero = CompanyExtract(
+        extractor_version="0.1.0",
+        extraction_provider="anthropic",
+        extraction_model="claude-sonnet-4-6-20260101",
+        extraction_timestamp="2026-05-03T12:00:00Z",
+        prompt_version="company_extract@0.1.0",
+        doc_type="CompanyExtract",
+        company_name="X",
+        directors=[],
+    )
+
+    not_extracted_dump = _dump_ce(not_extracted)
+    explicitly_zero_dump = _dump_ce(explicitly_zero)
+
+    assert "directors: null" in not_extracted_dump
+    assert "directors: []" in explicitly_zero_dump
+
+
+# EntityOwnership — first nested-object schema in the project. Two UBOs,
+# one Latin one CJK, with ownership_percentage strings preserved verbatim.
+CANONICAL_ENTITY_OWNERSHIP = EntityOwnership(
+    extractor_version="0.1.0",
+    extraction_provider="anthropic",
+    extraction_model="claude-sonnet-4-6-20260101",
+    extraction_timestamp="2026-05-03T12:00:00Z",
+    prompt_version="entity_ownership@0.1.0",
+    doc_type="EntityOwnership",
+    doc_subtype="",
+    jurisdiction="NZ",
+    name_latin="",
+    name_cjk="",
+    entity_name="Acme Holdings Limited",
+    ultimate_beneficial_owners=[
+        UltimateBeneficialOwner(
+            name="Alice Wong", dob="1985-07-12", ownership_percentage="60%"
+        ),
+        UltimateBeneficialOwner(
+            name="陳大文", dob="1990-01-15", ownership_percentage="40%"
+        ),
+    ],
+)
+
+EXPECTED_ENTITY_OWNERSHIP_YAML = """\
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T12:00:00Z'
+prompt_version: entity_ownership@0.1.0
+doc_type: EntityOwnership
+doc_subtype: ''
+jurisdiction: NZ
+name_latin: ''
+name_cjk: ''
+entity_name: Acme Holdings Limited
+ultimate_beneficial_owners:
+- name: Alice Wong
+  dob: '1985-07-12'
+  ownership_percentage: 60%
+- name: 陳大文
+  dob: '1990-01-15'
+  ownership_percentage: 40%
+"""
+
+
+def _dump_eo(eo: EntityOwnership) -> str:
+    return yaml.safe_dump(eo.model_dump(), allow_unicode=True, sort_keys=False)
+
+
+def test_canonical_entity_ownership_yaml_is_byte_stable() -> None:
+    assert _dump_eo(CANONICAL_ENTITY_OWNERSHIP) == EXPECTED_ENTITY_OWNERSHIP_YAML
+
+
+def test_entity_ownership_preserves_cjk_in_nested_ubo() -> None:
+    """CJK in nested UBO `name` round-trips raw, not as \\uXXXX escapes."""
+    dumped = _dump_eo(CANONICAL_ENTITY_OWNERSHIP)
+    assert "陳大文" in dumped
+    assert "\\u" not in dumped
+
+
+def test_entity_ownership_preserves_ownership_percentage_verbatim() -> None:
+    """ownership_percentage is a verbatim string — no normalisation across
+    `25%`/`0.25`/`approximately 25%`/CJK fraction renderings."""
+    eo = EntityOwnership(
+        extractor_version="0.1.0",
+        extraction_provider="anthropic",
+        extraction_model="claude-sonnet-4-6-20260101",
+        extraction_timestamp="2026-05-03T12:00:00Z",
+        prompt_version="entity_ownership@0.1.0",
+        doc_type="EntityOwnership",
+        entity_name="X",
+        ultimate_beneficial_owners=[
+            UltimateBeneficialOwner(name="A", ownership_percentage="0.25"),
+            UltimateBeneficialOwner(name="B", ownership_percentage="approximately 25%"),
+            UltimateBeneficialOwner(name="C", ownership_percentage="25.5%"),
+        ],
+    )
+    dumped = _dump_eo(eo)
+    # All four printed formats survive untouched.
+    assert "ownership_percentage: '0.25'" in dumped
+    assert "ownership_percentage: approximately 25%" in dumped
+    assert "ownership_percentage: 25.5%" in dumped

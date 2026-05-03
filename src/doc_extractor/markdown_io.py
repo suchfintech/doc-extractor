@@ -18,6 +18,8 @@ from typing import Any
 import yaml  # type: ignore[import-untyped]  # dev-dep `types-PyYAML` not yet wired
 
 from doc_extractor.schemas import Frontmatter, Passport
+from doc_extractor.schemas.company_extract import CompanyExtract
+from doc_extractor.schemas.entity_ownership import EntityOwnership
 from doc_extractor.schemas.payment_receipt import PaymentReceipt
 
 _FENCE = "---"
@@ -57,6 +59,13 @@ def _autofill_provenance(data: dict[str, Any]) -> None:
 _SCHEMA_BY_DOC_TYPE: dict[str, type[Frontmatter]] = {
     "Passport": Passport,
     "PaymentReceipt": PaymentReceipt,
+    # Story 5.3 — entity-document schemas need explicit dispatch so parse_md
+    # round-trips list[str] (directors / shareholders) and list[BaseModel]
+    # (ultimate_beneficial_owners) cleanly. Frontmatter base has
+    # extra="forbid" which would reject these subclass-specific keys on
+    # fallback, breaking the round-trip contract.
+    "CompanyExtract": CompanyExtract,
+    "EntityOwnership": EntityOwnership,
 }
 
 

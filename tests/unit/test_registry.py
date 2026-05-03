@@ -26,6 +26,8 @@ from doc_extractor.schemas.application_form import ApplicationForm
 from doc_extractor.schemas.bank_account_confirmation import BankAccountConfirmation
 from doc_extractor.schemas.bank_statement import BankStatement
 from doc_extractor.schemas.classification import DOC_TYPES
+from doc_extractor.schemas.company_extract import CompanyExtract
+from doc_extractor.schemas.entity_ownership import EntityOwnership
 from doc_extractor.schemas.ids import DriverLicence, NationalID, Passport, Visa
 from doc_extractor.schemas.payment_receipt import PaymentReceipt
 from doc_extractor.schemas.pep_declaration import PEP_Declaration
@@ -44,11 +46,12 @@ REAL_FACTORIES: dict[str, type] = {
     # Story 5.2 — Epic 5 bank documents promoted from _other_placeholder
     "BankStatement": BankStatement,
     "BankAccountConfirmation": BankAccountConfirmation,
+    # Story 5.3 — Epic 5 entity documents promoted from _other_placeholder
+    "CompanyExtract": CompanyExtract,
+    "EntityOwnership": EntityOwnership,
 }
 
 PLACEHOLDER_DOC_TYPES = (
-    "CompanyExtract",
-    "EntityOwnership",
     "ProofOfAddress",
     "TaxResidency",
     "Other",
@@ -76,7 +79,9 @@ def mocked_factory_deps(monkeypatch: pytest.MonkeyPatch) -> None:
         application_form,
         bank_account_confirmation,
         bank_statement,
+        company_extract,
         driver_licence,
+        entity_ownership,
         national_id,
         passport,
         payment_receipt,
@@ -101,6 +106,8 @@ def mocked_factory_deps(monkeypatch: pytest.MonkeyPatch) -> None:
         application_form,
         bank_statement,
         bank_account_confirmation,
+        company_extract,
+        entity_ownership,
     ):
         create_mock = MagicMock(side_effect=_make_model)
         validate_mock = MagicMock(return_value="test-api-key")

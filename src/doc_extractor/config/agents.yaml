@@ -76,3 +76,14 @@ bank_statement:
 bank_account_confirmation:
   provider: anthropic
   model: claude-sonnet-4-6-20260101
+
+# Epic 5 entity documents — Sonnet for the list+nested-object discipline
+# (CompanyExtract director/shareholder list ordering preservation,
+# EntityOwnership nested UBO list with verbatim ownership_percentage).
+company_extract:
+  provider: anthropic
+  model: claude-sonnet-4-6-20260101
+
+entity_ownership:
+  provider: anthropic
+  model: claude-sonnet-4-6-20260101

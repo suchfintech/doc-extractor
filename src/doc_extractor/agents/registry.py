@@ -45,7 +45,9 @@ from doc_extractor.agents.bank_account_confirmation import (
     create_bank_account_confirmation_agent,
 )
 from doc_extractor.agents.bank_statement import create_bank_statement_agent
+from doc_extractor.agents.company_extract import create_company_extract_agent
 from doc_extractor.agents.driver_licence import create_driver_licence_agent
+from doc_extractor.agents.entity_ownership import create_entity_ownership_agent
 from doc_extractor.agents.national_id import create_national_id_agent
 from doc_extractor.agents.passport import create_passport_agent
 from doc_extractor.agents.payment_receipt import create_payment_receipt_agent
@@ -87,9 +89,11 @@ FACTORIES: dict[str, AgentFactory] = {
     # `pdf_to_images(mode="all_pages")` per `_pdf_mode_for` in vision_path.
     "BankStatement": create_bank_statement_agent,
     "BankAccountConfirmation": create_bank_account_confirmation_agent,
+    # Epic 5 — entity documents (Story 5.3). EntityOwnership is the first
+    # specialist to emit a nested-object schema (UltimateBeneficialOwner).
+    "CompanyExtract": create_company_extract_agent,
+    "EntityOwnership": create_entity_ownership_agent,
     # Epic 5 — placeholders (replace with real factories as each ships):
-    "CompanyExtract": _other_placeholder,
-    "EntityOwnership": _other_placeholder,
     "ProofOfAddress": _other_placeholder,
     "TaxResidency": _other_placeholder,
     # Catch-all — Story 5.5 wires this to the real Other agent

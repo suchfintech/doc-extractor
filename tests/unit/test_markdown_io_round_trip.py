@@ -9,7 +9,12 @@ from __future__ import annotations
 import pytest
 
 from doc_extractor.markdown_io import parse_md, render_to_md
-from doc_extractor.schemas import Frontmatter, Passport
+from doc_extractor.schemas import (
+    EntityOwnership,
+    Frontmatter,
+    Passport,
+    UltimateBeneficialOwner,
+)
 
 
 def _canonical_passport() -> Passport:
@@ -109,3 +114,70 @@ def test_parse_md_rejects_input_without_fences() -> None:
 def test_parse_md_rejects_non_mapping_yaml_body() -> None:
     with pytest.raises(ValueError, match="must be a mapping"):
         parse_md("---\n- just\n- a list\n---\n\n")
+
+
+# --------------------------------------------------------------------------
+# Story 5.3 — list[BaseModel] round-trip (first nested-object schema)
+# --------------------------------------------------------------------------
+
+
+def _canonical_entity_ownership() -> EntityOwnership:
+    """Two UBOs, one Latin one CJK, plus a verbatim ownership_percentage with
+    a non-numeric qualifier so PyYAML's number-coercion can't quietly normalise."""
+    return EntityOwnership(
+        extractor_version="0.1.0",
+        extraction_provider="anthropic",
+        extraction_model="claude-sonnet-4-6-20260101",
+        extraction_timestamp="2026-05-03T12:00:00Z",
+        prompt_version="entity_ownership@0.1.0",
+        doc_type="EntityOwnership",
+        jurisdiction="NZ",
+        entity_name="Acme Holdings Limited",
+        ultimate_beneficial_owners=[
+            UltimateBeneficialOwner(
+                name="Alice Wong", dob="1985-07-12", ownership_percentage="60%"
+            ),
+            UltimateBeneficialOwner(
+                name="陳大文", dob="1990-01-15", ownership_percentage="approximately 40%"
+            ),
+        ],
+    )
+
+
+def test_entity_ownership_nested_list_round_trips_byte_equal() -> None:
+    """list[UltimateBeneficialOwner] survives Pydantic → YAML → Pydantic.
+
+    The dispatch entry in markdown_io._SCHEMA_BY_DOC_TYPE makes this work —
+    without it, parse_md would fall back to Frontmatter (extra="forbid")
+    and reject the EntityOwnership-specific keys.
+    """
+    eo = _canonical_entity_ownership()
+    md = render_to_md(eo)
+    parsed = parse_md(md)
+
+    assert type(parsed) is EntityOwnership
+    assert parsed == eo
+
+
+def test_entity_ownership_round_trip_preserves_cjk_in_nested_ubo() -> None:
+    """CJK characters in nested UBO `name` survive the YAML → text → YAML round."""
+    eo = _canonical_entity_ownership()
+    md = render_to_md(eo)
+    # Raw CJK in the rendered body, not \uXXXX escapes.
+    assert "陳大文" in md
+    assert "\\u" not in md
+    # Parse round-trip preserves the CJK glyph.
+    parsed = parse_md(md)
+    assert isinstance(parsed, EntityOwnership)
+    assert parsed.ultimate_beneficial_owners is not None
+    assert parsed.ultimate_beneficial_owners[1].name == "陳大文"
+
+
+def test_entity_ownership_round_trip_preserves_verbatim_ownership_percentage() -> None:
+    """`approximately 40%` survives unquoted-text round-trip without normalisation."""
+    eo = _canonical_entity_ownership()
+    md = render_to_md(eo)
+    parsed = parse_md(md)
+    assert isinstance(parsed, EntityOwnership)
+    assert parsed.ultimate_beneficial_owners is not None
+    assert parsed.ultimate_beneficial_owners[1].ownership_percentage == "approximately 40%"

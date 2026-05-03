@@ -1,15 +1,29 @@
 """Frontmatter base — fields shared by every doc_type schema.
 
-Convention: empty-string-not-null. Every field is `str | None` defaulting to
-`""`; a `field_validator` coerces incoming `None` → `""` so YAML dumps remain
-byte-stable (PyYAML renders `None` as `null`, which would break the
-`tests/unit/test_schema_byte_stability.py` snapshot).
+Convention: empty-string-not-null **for string fields**. Every string field is
+`str | None` defaulting to `""`; a `field_validator` coerces incoming `None`
+→ `""` so YAML dumps remain byte-stable (PyYAML renders `None` as `null`,
+which would break the `tests/unit/test_schema_byte_stability.py` snapshot).
+
+For non-string fields (e.g. `list[str]`, `list[BaseModel]` introduced in
+Story 5.3's CompanyExtract / EntityOwnership), `None` is the "not extracted"
+sentinel and `[]` is the "explicitly empty" sentinel — both meaningful and
+distinct. The validator preserves `None` for those cases.
 """
 from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator
+
+
+def _is_string_field(annotation: Any) -> bool:
+    """Return True iff the annotation is `str` or `str | None` (or its alias)."""
+    if annotation is str:
+        return True
+    # Handle `str | None`, `Optional[str]`, etc. — the args contain (str, NoneType).
+    args = getattr(annotation, "__args__", ())
+    return bool(args) and all(a is str or a is type(None) for a in args)
 
 
 class Frontmatter(BaseModel):
@@ -32,5 +46,13 @@ class Frontmatter(BaseModel):
 
     @field_validator("*", mode="before")
     @classmethod
-    def _none_to_empty(cls, v: Any) -> Any:
-        return "" if v is None else v
+    def _none_to_empty(cls, v: Any, info: ValidationInfo) -> Any:
+        if v is not None:
+            return v
+        # Only coerce None → "" for string-typed fields. Non-string fields
+        # (list[...], nested BaseModel, etc.) keep None as the explicit
+        # "not extracted" sentinel.
+        field = cls.model_fields.get(info.field_name or "")
+        if field is None or _is_string_field(field.annotation):
+            return ""
+        return v
