@@ -8,9 +8,11 @@ changes.
 """
 from __future__ import annotations
 
+from datetime import date
+
 import yaml
 
-from doc_extractor.schemas import Passport
+from doc_extractor.schemas import Passport, PaymentReceipt
 
 CANONICAL_PASSPORT = Passport(
     extractor_version="0.1.0",
@@ -111,3 +113,130 @@ def test_field_order_matches_inheritance_chain() -> None:
         "mrz_line_2",
     ]
     assert keys == expected_prefix
+
+
+# --------------------------------------------------------------------------
+# PaymentReceipt — Story 3.1
+# --------------------------------------------------------------------------
+
+# Canonical CN payment with masked debit card and CJK fields. Mask shapes are
+# verbatim (FR25/FR26): `6217 **** **** 0083` and `02-0248-0242329-02` round
+# through Pydantic and PyYAML untouched.
+CANONICAL_PAYMENT_RECEIPT = PaymentReceipt(
+    extractor_version="0.1.0",
+    extraction_provider="anthropic",
+    extraction_model="claude-sonnet-4-6-20260101",
+    extraction_timestamp="2026-05-03T19:00:00Z",
+    prompt_version="0.1.0",
+    doc_type="PaymentReceipt",
+    jurisdiction="CN",
+    receipt_amount="15000.00",
+    receipt_currency="CNY",
+    receipt_time="2025-07-01T00:00:00Z",
+    receipt_debit_account_name="张三",
+    receipt_debit_account_number="6217 **** **** 0083",
+    receipt_debit_bank_name="中国工商银行",
+    receipt_credit_account_name="GM6040",
+    receipt_credit_account_number="02-0248-0242329-02",
+    receipt_credit_bank_name="ANZ",
+    receipt_reference="INV-2025-001",
+    receipt_payment_app="工商银行手机银行",
+)
+
+EXPECTED_PAYMENT_RECEIPT_YAML = """\
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T19:00:00Z'
+prompt_version: 0.1.0
+doc_type: PaymentReceipt
+doc_subtype: ''
+jurisdiction: CN
+name_latin: ''
+name_cjk: ''
+receipt_amount: '15000.00'
+receipt_currency: CNY
+receipt_time: '2025-07-01T00:00:00Z'
+receipt_debit_account_name: 张三
+receipt_debit_account_number: 6217 **** **** 0083
+receipt_debit_bank_name: 中国工商银行
+receipt_credit_account_name: GM6040
+receipt_credit_account_number: 02-0248-0242329-02
+receipt_credit_bank_name: ANZ
+receipt_reference: INV-2025-001
+receipt_payment_app: 工商银行手机银行
+receipt_counterparty_name: ''
+receipt_counterparty_account: ''
+"""
+
+
+def _dump_pr(receipt: PaymentReceipt) -> str:
+    return yaml.safe_dump(
+        receipt.model_dump(),
+        allow_unicode=True,
+        sort_keys=False,
+    )
+
+
+def test_canonical_payment_receipt_yaml_is_byte_stable() -> None:
+    assert _dump_pr(CANONICAL_PAYMENT_RECEIPT) == EXPECTED_PAYMENT_RECEIPT_YAML
+
+
+def test_canonical_payment_receipt_dump_is_idempotent() -> None:
+    assert _dump_pr(CANONICAL_PAYMENT_RECEIPT) == _dump_pr(CANONICAL_PAYMENT_RECEIPT)
+
+
+def test_payment_receipt_preserves_cjk_and_mask_verbatim() -> None:
+    dumped = _dump_pr(CANONICAL_PAYMENT_RECEIPT)
+    # CJK characters appear raw, not as \\uXXXX escapes.
+    assert "张三" in dumped
+    assert "中国工商银行" in dumped
+    assert "工商银行手机银行" in dumped
+    assert "\\u" not in dumped
+    # Account-number masks survive byte-equal.
+    assert "6217 **** **** 0083" in dumped
+    assert "02-0248-0242329-02" in dumped
+
+
+def test_payment_receipt_field_order_matches_inheritance() -> None:
+    """Frontmatter fields first, then PaymentReceipt additions, then deprecated
+    counterparty aliases at the end (declaration order is the contract)."""
+    keys = list(PaymentReceipt.model_fields.keys())
+    assert keys == [
+        # Frontmatter base
+        "extractor_version",
+        "extraction_provider",
+        "extraction_model",
+        "extraction_timestamp",
+        "prompt_version",
+        "doc_type",
+        "doc_subtype",
+        "jurisdiction",
+        "name_latin",
+        "name_cjk",
+        # PaymentReceipt new fields (debit/credit split)
+        "receipt_amount",
+        "receipt_currency",
+        "receipt_time",
+        "receipt_debit_account_name",
+        "receipt_debit_account_number",
+        "receipt_debit_bank_name",
+        "receipt_credit_account_name",
+        "receipt_credit_account_number",
+        "receipt_credit_bank_name",
+        "receipt_reference",
+        "receipt_payment_app",
+        # Deprecated aliases — overlap window expires 2026-08-03
+        "receipt_counterparty_name",
+        "receipt_counterparty_account",
+    ]
+
+
+def test_payment_receipt_deprecated_overlap_window_not_yet_expired() -> None:
+    """Sentinel: when the FR27 one-quarter overlap closes, intentionally remove
+    the deprecated fields and bump `extractor_version`. This test fails on
+    2026-08-03 to force the cleanup decision."""
+    assert date.today() < date(2026, 8, 3), (
+        "FR27 overlap window for receipt_counterparty_* expired — drop the "
+        "deprecated fields from PaymentReceipt and bump extractor_version."
+    )
