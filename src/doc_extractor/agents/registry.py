@@ -1,5 +1,11 @@
 """Agent registry — single dispatch table from ``DOC_TYPES`` to factory functions.
 
+**All 15 specialists are real factories as of Story 5.5.** The Epic 5
+sequence (Stories 5.1 → 5.2 → 5.3 → 5.4 → 5.5) progressively replaced
+the ``_other_placeholder`` sentinel that was Story 4.5's seed for the
+nine Epic 5 doc-types plus ``Other``; the placeholder is gone now and
+every entry below points at a working ``create_*_agent`` function.
+
 The vision pipeline reads :data:`FACTORIES` to look up the specialist for a
 given ``Classification.doc_type``. Centralising the mapping here means
 adding a new specialist requires touching exactly **five** production files
@@ -49,6 +55,7 @@ from doc_extractor.agents.company_extract import create_company_extract_agent
 from doc_extractor.agents.driver_licence import create_driver_licence_agent
 from doc_extractor.agents.entity_ownership import create_entity_ownership_agent
 from doc_extractor.agents.national_id import create_national_id_agent
+from doc_extractor.agents.other import create_other_agent
 from doc_extractor.agents.passport import create_passport_agent
 from doc_extractor.agents.payment_receipt import create_payment_receipt_agent
 from doc_extractor.agents.pep_declaration import create_pep_declaration_agent
@@ -59,29 +66,13 @@ from doc_extractor.agents.visa import create_visa_agent
 
 AgentFactory = Callable[..., Agent]
 
-
-def _other_placeholder(provider: str | None = None) -> Agent:
-    """Sentinel factory for doc-types whose real specialist hasn't shipped yet.
-
-    Routes the nine Epic 5 specialists (and ``Other``) here until Story 5.5
-    lands the real ``create_other_agent``. Raises rather than silently
-    returning a degraded Agent so callers see a clear error in CI / logs
-    rather than a low-quality extraction with the wrong schema.
-    """
-    del provider
-    raise NotImplementedError(
-        "Specialist not yet implemented — Story 5.5 will replace this placeholder. "
-        "Until then, doc-types routed here cannot be extracted via the vision pipeline."
-    )
-
-
 FACTORIES: dict[str, AgentFactory] = {
-    # Epic 1 / 4 — fully implemented specialists
+    # Epic 1 / 4 — ID-class specialists
     "Passport": create_passport_agent,
     "DriverLicence": create_driver_licence_agent,
     "NationalID": create_national_id_agent,
     "Visa": create_visa_agent,
-    # Epic 3 — fully implemented
+    # Epic 3 — transactional specialist
     "PaymentReceipt": create_payment_receipt_agent,
     # Epic 5 — compliance documents (Story 5.1)
     "PEP_Declaration": create_pep_declaration_agent,
@@ -98,6 +89,8 @@ FACTORIES: dict[str, AgentFactory] = {
     # Epic 5 — person-related documents (Story 5.4).
     "ProofOfAddress": create_proof_of_address_agent,
     "TaxResidency": create_tax_residency_agent,
-    # Catch-all — Story 5.5 wires this to the real Other agent
-    "Other": _other_placeholder,
+    # Epic 5 catch-all (Story 5.5) — graceful-degradation surface for
+    # documents the classifier didn't fit to one of the 14 typed
+    # specialists. The only Haiku-default agent in the system.
+    "Other": create_other_agent,
 }

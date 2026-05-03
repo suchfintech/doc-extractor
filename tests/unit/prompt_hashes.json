@@ -31,6 +31,10 @@
     "body_sha256": "31aae58af476610e908070b476b138198e51cb047123badac61e5e480b87a22f",
     "version": "0.1.0"
   },
+  "other.md": {
+    "body_sha256": "ce9f1f01b49a05f3151bbc5e2bf2e1cadfc3e888547dee86b66ef8b4f1b9be6a",
+    "version": "0.1.0"
+  },
   "passport.md": {
     "body_sha256": "c3fd00dee757c73683da1b64ccce44aa66e5580569d074265c44b8e9267ae782",
     "version": "0.1.0"

@@ -11,6 +11,7 @@ from doc_extractor.agents.company_extract import create_company_extract_agent
 from doc_extractor.agents.driver_licence import create_driver_licence_agent
 from doc_extractor.agents.entity_ownership import create_entity_ownership_agent
 from doc_extractor.agents.national_id import create_national_id_agent
+from doc_extractor.agents.other import create_other_agent
 from doc_extractor.agents.passport import create_passport_agent
 from doc_extractor.agents.payment_receipt import create_payment_receipt_agent
 from doc_extractor.agents.pep_declaration import create_pep_declaration_agent
@@ -30,6 +31,7 @@ __all__ = [
     "create_driver_licence_agent",
     "create_entity_ownership_agent",
     "create_national_id_agent",
+    "create_other_agent",
     "create_passport_agent",
     "create_payment_receipt_agent",
     "create_pep_declaration_agent",

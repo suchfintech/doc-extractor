@@ -6,9 +6,8 @@ The two load-bearing assertions:
    DOC_TYPES sentinel that fails loudly if a 16th doc-type lands without a
    matching registry entry. This is what enforces the NFR19 5-file
    extension cost in CI.
-2. The five fully-implemented factories construct real Agno Agents (with
-   the right ``output_schema``); the ten Epic 5 placeholders all share the
-   same callable and raise ``NotImplementedError``.
+2. **All 15 factories construct real Agno Agents (Story 5.5 closed Epic 5)**
+   with the right ``output_schema``. There are no placeholders left.
 """
 from __future__ import annotations
 
@@ -21,7 +20,7 @@ from agno.agent import Agent
 from agno.models.base import Model
 
 from doc_extractor.agents import registry
-from doc_extractor.agents.registry import FACTORIES, _other_placeholder
+from doc_extractor.agents.registry import FACTORIES
 from doc_extractor.schemas.application_form import ApplicationForm
 from doc_extractor.schemas.bank_account_confirmation import BankAccountConfirmation
 from doc_extractor.schemas.bank_statement import BankStatement
@@ -29,6 +28,7 @@ from doc_extractor.schemas.classification import DOC_TYPES
 from doc_extractor.schemas.company_extract import CompanyExtract
 from doc_extractor.schemas.entity_ownership import EntityOwnership
 from doc_extractor.schemas.ids import DriverLicence, NationalID, Passport, Visa
+from doc_extractor.schemas.other import Other
 from doc_extractor.schemas.payment_receipt import PaymentReceipt
 from doc_extractor.schemas.pep_declaration import PEP_Declaration
 from doc_extractor.schemas.proof_of_address import ProofOfAddress
@@ -54,12 +54,16 @@ REAL_FACTORIES: dict[str, type] = {
     # Story 5.4 — Epic 5 person-related documents promoted from _other_placeholder
     "ProofOfAddress": ProofOfAddress,
     "TaxResidency": TaxResidency,
+    # Story 5.5 — Epic 5 catch-all promoted from _other_placeholder; closes Epic 5.
+    "Other": Other,
 }
 
-# After Story 5.4 only `Other` remains — Story 5.5 will replace it with the
-# real catch-all and PLACEHOLDER_DOC_TYPES will become an empty tuple
-# (parametrized tests over an empty list are valid no-ops).
-PLACEHOLDER_DOC_TYPES = ("Other",)
+# Story 5.5 emptied this tuple — every DOC_TYPES literal now has a real
+# factory. The parametrized "placeholder" tests below become no-ops
+# (parametrize over an empty list runs zero iterations), which is the
+# desired end state. Future schema additions that ship without an agent
+# would re-populate this tuple.
+PLACEHOLDER_DOC_TYPES: tuple[str, ...] = ()
 
 
 @pytest.fixture(autouse=True)
@@ -87,6 +91,7 @@ def mocked_factory_deps(monkeypatch: pytest.MonkeyPatch) -> None:
         driver_licence,
         entity_ownership,
         national_id,
+        other,
         passport,
         payment_receipt,
         pep_declaration,
@@ -116,6 +121,7 @@ def mocked_factory_deps(monkeypatch: pytest.MonkeyPatch) -> None:
         entity_ownership,
         proof_of_address,
         tax_residency,
+        other,
     ):
         create_mock = MagicMock(side_effect=_make_model)
         validate_mock = MagicMock(return_value="test-api-key")
@@ -159,22 +165,19 @@ def test_real_factories_construct_agents_with_correct_schema(
     assert agent.output_schema is REAL_FACTORIES[doc_type]
 
 
-@pytest.mark.parametrize("doc_type", PLACEHOLDER_DOC_TYPES)
-def test_placeholder_doc_types_all_route_to_other_placeholder(doc_type: str) -> None:
-    """Epic 5 specialists + Other share the single ``_other_placeholder``.
+def test_placeholder_doc_types_is_empty() -> None:
+    """Story 5.5 closed Epic 5 — every DOC_TYPES literal has a real factory.
 
-    When Story 5.5 lands, the ``Other`` entry flips to the real factory and
-    the nine Epic 5 specialists each replace their entry with their own
-    factory. Until then, all ten share one callable.
+    Story 4.5 introduced ``_other_placeholder`` as a sentinel that raised
+    NotImplementedError; Stories 5.1 → 5.2 → 5.3 → 5.4 → 5.5 progressively
+    promoted each placeholder to a real factory. The placeholder symbol is
+    gone from registry.py entirely now.
     """
-    assert FACTORIES[doc_type] is _other_placeholder
-
-
-@pytest.mark.parametrize("doc_type", PLACEHOLDER_DOC_TYPES)
-def test_placeholder_factory_raises_not_implemented(doc_type: str) -> None:
-    factory = FACTORIES[doc_type]
-    with pytest.raises(NotImplementedError, match="Specialist not yet implemented"):
-        factory()
+    assert PLACEHOLDER_DOC_TYPES == ()
+    assert not hasattr(registry, "_other_placeholder"), (
+        "registry._other_placeholder should be removed now that no doc-type "
+        "depends on it (Story 5.5 closed Epic 5)."
+    )
 
 
 def test_factories_is_re_exported_from_package() -> None:

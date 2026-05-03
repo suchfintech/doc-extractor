@@ -98,3 +98,12 @@ proof_of_address:
 tax_residency:
   provider: anthropic
   model: claude-sonnet-4-6-20260101
+
+# Epic 5 catch-all (Story 5.5) — the ONLY Haiku-default agent. Other is
+# the graceful-degradation surface for documents that don't fit any of the
+# 14 typed specialists; the output is loose by design (description +
+# OCR-style dump + commentary), so cheap-model is appropriate. Closes the
+# 15-specialist roster.
+other:
+  provider: anthropic
+  model: claude-haiku-4-5-20251001
