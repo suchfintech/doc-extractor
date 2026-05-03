@@ -25,17 +25,11 @@ jobs:
         run: .venv/bin/mypy --strict src/doc_extractor
       - name: Pytest with coverage
         run: .venv/bin/pytest --cov --cov-fail-under=85 tests/
-      # TODO Story 2.7 — drop the `if [ -f ... ]` guard once
-      # scripts/verify_canonical.py ships. The CI gate then becomes a
-      # plain invocation; the YAML-validation test in
-      # tests/unit/test_workflows_yaml.py has a sentinel that fires
-      # when the file appears so this stub doesn't go stale.
-      - name: Verify canonical (stub — Story 2.7)
-        run: |
-          if [ -f scripts/verify_canonical.py ]; then
-            .venv/bin/python scripts/verify_canonical.py
-          else
-            echo "Story 2.7 not yet shipped — skipping verify_canonical"
-          fi
+      # Story 2.7 / AR3 — canonical-4 regression gate. ``--mocked`` is the
+      # CI-safe mode: tautological extractor validates the script's wiring
+      # without spending API budget on every commit. Yang's nightly real-
+      # provider run is wired separately once Story 2.1 ships fixtures.
+      - name: Verify canonical
+        run: .venv/bin/python scripts/verify_canonical.py --mocked
       - name: Cost-ceiling check
         run: .venv/bin/python scripts/check_cost_ceiling.py

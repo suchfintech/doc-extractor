@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import sys
 from pathlib import Path
+from typing import Any
 
 from doc_extractor import __version__
 from doc_extractor.eval import run_eval
@@ -94,6 +95,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    verify_parser = subparsers.add_parser(
+        "verify-canonical",
+        help=(
+            "Run the canonical-4 verification gate (Story 2.7). Asserts the "
+            "four pinned receipt_debit_/receipt_credit_ fields on every "
+            "tests/canonical/fixtures/ pair."
+        ),
+    )
+    verify_parser.add_argument(
+        "--mocked",
+        action="store_true",
+        help=(
+            "Structural smoke mode: tautological extractor returns expected. "
+            "Use for CI without API calls."
+        ),
+    )
+
     eval_parser = subparsers.add_parser(
         "eval",
         help="Run the eval harness against the golden corpus and emit a Scorecard.",
@@ -178,6 +196,39 @@ def _run_extract(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _load_verify_canonical_script() -> Any:
+    """Load ``scripts/verify_canonical.py`` as a module.
+
+    The script lives outside the package (``scripts/`` is sibling to
+    ``src/``), so we import it dynamically rather than via the regular
+    package machinery. ``Path(__file__).resolve().parents[2]`` is the
+    repo root in editable installs (``cli.py`` → ``doc_extractor`` →
+    ``src`` → repo).
+    """
+    from importlib.util import module_from_spec, spec_from_file_location
+
+    repo_root = Path(__file__).resolve().parents[2]
+    script_path = repo_root / "scripts" / "verify_canonical.py"
+    spec = spec_from_file_location("_verify_canonical_script", script_path)
+    if spec is None or spec.loader is None:
+        raise FileNotFoundError(
+            f"verify_canonical.py not found at {script_path}"
+        )
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _run_verify_canonical(args: argparse.Namespace) -> int:
+    script = _load_verify_canonical_script()
+    exit_code, message = asyncio.run(
+        script.verify_canonical(mocked=args.mocked)
+    )
+    out = sys.stdout if exit_code == 0 else sys.stderr
+    print(message, file=out)
+    return int(exit_code)
+
+
 def _run_eval(args: argparse.Namespace) -> int:
     scorecard = asyncio.run(
         run_eval(
@@ -199,14 +250,19 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if args.command not in {"extract", "eval"}:
+    if args.command not in {"extract", "eval", "verify-canonical"}:
         print(f"doc-extractor {__version__}")
-        print("Subcommands: extract | eval. Try `doc-extractor --help`.")
+        print(
+            "Subcommands: extract | eval | verify-canonical. "
+            "Try `doc-extractor --help`."
+        )
         return EXIT_OK
 
     try:
         if args.command == "extract":
             return _run_extract(args)
+        if args.command == "verify-canonical":
+            return _run_verify_canonical(args)
         return _run_eval(args)
     except ConfigurationError as exc:
         print(f"configuration error: {exc}", file=sys.stderr)
