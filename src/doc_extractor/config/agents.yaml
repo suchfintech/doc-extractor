@@ -1,0 +1,8 @@
+# Per-agent provider/model defaults.
+# Resolution chain (config/precedence.py): CLI > env > this YAML > hardcoded fallback.
+# Env override pattern: DOC_EXTRACTOR_PROVIDER_<AGENT_NAME>, DOC_EXTRACTOR_MODEL_<AGENT_NAME>
+# (AGENT_NAME is upper-snake, e.g. PASSPORT, DRIVER_LICENCE).
+
+passport:
+  provider: anthropic
+  model: claude-sonnet-4-6-20260101
