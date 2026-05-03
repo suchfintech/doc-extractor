@@ -1,0 +1,39 @@
+# Per-agent primary-field thresholds. CI fails if any field's match_rate
+# falls below its declared threshold. Used by scripts/check_eval_thresholds.py
+# against the latest committed scorecard JSON.
+#
+# Story 2.6 / NFR18 — regression-gated PRs. The thresholds below are
+# scorecard.per_field[agent][field].match_rate floors; the script reads
+# tests/scorecards/<latest>.json and fails CI on the first breach.
+#
+# Adding a sixth specialist? Add a top-level key here keyed by the agent's
+# PascalCase doc_type (matching the schema class name + DOC_TYPES literal).
+# Fields not listed under an agent fall through to `_default` (0.90).
+# Agents not listed at all also fall through to `_default` for every field.
+
+_default: 0.90
+
+Passport:
+  name_latin: 0.98
+  doc_number: 0.98
+  expiry_date: 0.98
+
+PaymentReceipt:
+  receipt_debit_account_number: 0.95
+  receipt_credit_account_number: 0.95
+  receipt_amount: 0.95
+  receipt_time: 0.95
+
+DriverLicence:
+  name_latin: 0.95
+  doc_number: 0.95
+
+NationalID:
+  id_card_number: 0.95
+  name_latin: 0.95
+
+Visa:
+  visa_class: 0.95
+  valid_to: 0.95
+
+# Other agents fall through to _default (0.90) on unlisted fields.
