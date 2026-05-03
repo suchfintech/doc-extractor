@@ -19,3 +19,10 @@ classifier:
 payment_receipt:
   provider: anthropic
   model: claude-sonnet-4-6-20260101
+
+# Driver licences are ID-document-class — same Sonnet default as Passport. The
+# day-first vs ISO date conversion and CJK address fields benefit from the
+# stronger model.
+driver_licence:
+  provider: anthropic
+  model: claude-sonnet-4-6-20260101

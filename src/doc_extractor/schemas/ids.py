@@ -26,3 +26,10 @@ class Passport(IDDocBase):
     nationality: str | None = ""
     mrz_line_1: str | None = ""
     mrz_line_2: str | None = ""
+
+
+class DriverLicence(IDDocBase):
+    licence_class: str | None = ""
+    licence_endorsements: str | None = ""
+    licence_restrictions: str | None = ""
+    address: str | None = ""

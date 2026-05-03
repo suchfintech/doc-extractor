@@ -12,7 +12,7 @@ from datetime import date
 
 import yaml
 
-from doc_extractor.schemas import Passport, PaymentReceipt
+from doc_extractor.schemas import DriverLicence, Passport, PaymentReceipt
 
 CANONICAL_PASSPORT = Passport(
     extractor_version="0.1.0",
@@ -240,3 +240,103 @@ def test_payment_receipt_deprecated_overlap_window_not_yet_expired() -> None:
         "FR27 overlap window for receipt_counterparty_* expired — drop the "
         "deprecated fields from PaymentReceipt and bump extractor_version."
     )
+
+
+# --------------------------------------------------------------------------
+# DriverLicence — Story 4.1
+# --------------------------------------------------------------------------
+
+# Canonical NZ DLA — Class 1 single-vehicle licence, Latin-only, no
+# endorsements / restrictions. The address has no flow-collection-conflicting
+# punctuation so PyYAML emits it plain (matches the Passport snapshot style).
+CANONICAL_DRIVER_LICENCE = DriverLicence(
+    extractor_version="0.1.0",
+    extraction_provider="anthropic",
+    extraction_model="claude-sonnet-4-6-20260101",
+    extraction_timestamp="2026-05-03T12:00:00Z",
+    prompt_version="driver_licence@0.1.0",
+    doc_type="DriverLicence",
+    doc_subtype="",
+    jurisdiction="NZL",
+    name_latin="JOHN DOE",
+    name_cjk="",
+    doc_number="EH123456",
+    dob="1990-06-15",
+    issue_date="2020-06-01",
+    expiry_date="2030-05-31",
+    place_of_birth="",
+    sex="M",
+    licence_class="Class 1",
+    licence_endorsements="",
+    licence_restrictions="",
+    address="123 Queen Street Auckland 1010",
+)
+
+EXPECTED_DRIVER_LICENCE_YAML = """\
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T12:00:00Z'
+prompt_version: driver_licence@0.1.0
+doc_type: DriverLicence
+doc_subtype: ''
+jurisdiction: NZL
+name_latin: JOHN DOE
+name_cjk: ''
+doc_number: EH123456
+dob: '1990-06-15'
+issue_date: '2020-06-01'
+expiry_date: '2030-05-31'
+place_of_birth: ''
+sex: M
+licence_class: Class 1
+licence_endorsements: ''
+licence_restrictions: ''
+address: 123 Queen Street Auckland 1010
+"""
+
+
+def _dump_dl(licence: DriverLicence) -> str:
+    return yaml.safe_dump(
+        licence.model_dump(),
+        allow_unicode=True,
+        sort_keys=False,
+    )
+
+
+def test_canonical_driver_licence_yaml_is_byte_stable() -> None:
+    assert _dump_dl(CANONICAL_DRIVER_LICENCE) == EXPECTED_DRIVER_LICENCE_YAML
+
+
+def test_canonical_driver_licence_dump_is_idempotent() -> None:
+    assert _dump_dl(CANONICAL_DRIVER_LICENCE) == _dump_dl(CANONICAL_DRIVER_LICENCE)
+
+
+def test_driver_licence_field_order_matches_inheritance() -> None:
+    """Frontmatter → IDDocBase → DriverLicence additions, in declaration order."""
+    keys = list(DriverLicence.model_fields.keys())
+    assert keys == [
+        # Frontmatter
+        "extractor_version",
+        "extraction_provider",
+        "extraction_model",
+        "extraction_timestamp",
+        "prompt_version",
+        "doc_type",
+        "doc_subtype",
+        "jurisdiction",
+        "name_latin",
+        "name_cjk",
+        # IDDocBase
+        "doc_number",
+        "dob",
+        "issue_date",
+        "expiry_date",
+        "place_of_birth",
+        "sex",
+        # DriverLicence additions
+        "licence_class",
+        "licence_endorsements",
+        "licence_restrictions",
+        "address",
+    ]
