@@ -33,3 +33,11 @@ driver_licence:
 national_id:
   provider: anthropic
   model: claude-sonnet-4-6-20260101
+
+# Visas — Sonnet because the four supported formats (NZ Immigration, CN CVASC,
+# US B1/B2, Schengen) each have format-internal class codes (L/F/M/Z, B1/B2,
+# C/D, etc.) plus ISO 3166-1 alpha-2 country normalisation that benefits from
+# the stronger model.
+visa:
+  provider: anthropic
+  model: claude-sonnet-4-6-20260101

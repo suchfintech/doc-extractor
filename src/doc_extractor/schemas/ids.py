@@ -40,3 +40,12 @@ class NationalID(IDDocBase):
     id_card_number: str | None = ""
     issuing_authority: str | None = ""
     address: str | None = ""
+
+
+class Visa(IDDocBase):
+    visa_class: str | None = ""
+    issuing_country: str | None = ""
+    host_country: str | None = ""
+    valid_from: str | None = ""
+    valid_to: str | None = ""
+    entries_allowed: str | None = ""

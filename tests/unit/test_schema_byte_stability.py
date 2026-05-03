@@ -12,7 +12,7 @@ from datetime import date
 
 import yaml
 
-from doc_extractor.schemas import DriverLicence, NationalID, Passport, PaymentReceipt
+from doc_extractor.schemas import DriverLicence, NationalID, Passport, PaymentReceipt, Visa
 
 CANONICAL_PASSPORT = Passport(
     extractor_version="0.1.0",
@@ -455,4 +455,110 @@ def test_national_id_field_order_matches_inheritance() -> None:
         "id_card_number",
         "issuing_authority",
         "address",
+    ]
+
+
+# --------------------------------------------------------------------------
+# Visa — Story 4.3
+# --------------------------------------------------------------------------
+
+# Canonical NZ resident visa. The travel-window dates (`valid_from`/`valid_to`)
+# happen to coincide with the label dates here — the snapshot still pins both
+# fields so a future change to either pathway shows up as a diff.
+CANONICAL_VISA = Visa(
+    extractor_version="0.1.0",
+    extraction_provider="anthropic",
+    extraction_model="claude-sonnet-4-6-20260101",
+    extraction_timestamp="2026-05-03T12:00:00Z",
+    prompt_version="visa@0.1.0",
+    doc_type="Visa",
+    doc_subtype="",
+    jurisdiction="NZ",
+    name_latin="CHAN TAI MAN",
+    name_cjk="",
+    doc_number="ABCD1234567",
+    dob="1990-01-15",
+    issue_date="2024-03-01",
+    expiry_date="2027-02-28",
+    place_of_birth="",
+    sex="M",
+    visa_class="Resident Visa",
+    issuing_country="NZ",
+    host_country="NZ",
+    valid_from="2024-03-01",
+    valid_to="2027-02-28",
+    entries_allowed="Multiple",
+)
+
+EXPECTED_VISA_YAML = """\
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T12:00:00Z'
+prompt_version: visa@0.1.0
+doc_type: Visa
+doc_subtype: ''
+jurisdiction: NZ
+name_latin: CHAN TAI MAN
+name_cjk: ''
+doc_number: ABCD1234567
+dob: '1990-01-15'
+issue_date: '2024-03-01'
+expiry_date: '2027-02-28'
+place_of_birth: ''
+sex: M
+visa_class: Resident Visa
+issuing_country: NZ
+host_country: NZ
+valid_from: '2024-03-01'
+valid_to: '2027-02-28'
+entries_allowed: Multiple
+"""
+
+
+def _dump_visa(visa: Visa) -> str:
+    return yaml.safe_dump(
+        visa.model_dump(),
+        allow_unicode=True,
+        sort_keys=False,
+    )
+
+
+def test_canonical_visa_yaml_is_byte_stable() -> None:
+    assert _dump_visa(CANONICAL_VISA) == EXPECTED_VISA_YAML
+
+
+def test_canonical_visa_dump_is_idempotent() -> None:
+    assert _dump_visa(CANONICAL_VISA) == _dump_visa(CANONICAL_VISA)
+
+
+def test_visa_field_order_matches_inheritance() -> None:
+    """Frontmatter → IDDocBase → Visa additions, in declaration order."""
+    keys = list(Visa.model_fields.keys())
+    assert keys == [
+        # Frontmatter
+        "extractor_version",
+        "extraction_provider",
+        "extraction_model",
+        "extraction_timestamp",
+        "prompt_version",
+        "doc_type",
+        "doc_subtype",
+        "jurisdiction",
+        "name_latin",
+        "name_cjk",
+        # IDDocBase
+        "doc_number",
+        "dob",
+        "issue_date",
+        "expiry_date",
+        "place_of_birth",
+        "sex",
+        # Visa additions
+        "visa_class",
+        "issuing_country",
+        "host_country",
+        "valid_from",
+        "valid_to",
+        "entries_allowed",
     ]
