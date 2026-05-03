@@ -1,0 +1,115 @@
+"""Unit tests for the PaymentReceipt agent factory.
+
+Mocks ``VisionModelFactory.create``, ``VisionModelFactory.validate_api_key``,
+and ``load_prompt`` so the test runs offline. ``MagicMock(spec=Model)`` is
+required so Agno's isinstance(model, Model) check passes (convention from
+worker-2's vision-pipeline tests).
+"""
+from __future__ import annotations
+
+import os
+from typing import Any
+from unittest.mock import MagicMock
+
+import pytest
+from agno.agent import Agent
+from agno.models.base import Model
+
+from doc_extractor.agents import payment_receipt as payment_receipt_module
+from doc_extractor.agents.payment_receipt import create_payment_receipt_agent
+from doc_extractor.schemas.payment_receipt import PaymentReceipt
+
+
+@pytest.fixture(autouse=True)
+def clear_doc_extractor_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Strip DOC_EXTRACTOR_* env vars so the host shell can't leak into tests."""
+    for key in list(os.environ):
+        if key.startswith("DOC_EXTRACTOR_"):
+            monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture
+def mocked_deps(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
+    create_mock = MagicMock(name="VisionModelFactory.create")
+    # spec=Model so Agno's isinstance check passes; capture model_id on the mock
+    # so tests can assert which dated identifier got wired through.
+    def _make_model(**kwargs: Any) -> MagicMock:
+        m = MagicMock(spec=Model)
+        m.id = kwargs.get("model_id")
+        return m
+
+    create_mock.side_effect = _make_model
+    validate_mock = MagicMock(name="VisionModelFactory.validate_api_key")
+    validate_mock.return_value = "test-api-key"
+    load_prompt_mock = MagicMock(name="load_prompt")
+    load_prompt_mock.return_value = ("PAYMENT RECEIPT PROMPT BODY", "0.1.0")
+
+    monkeypatch.setattr(
+        payment_receipt_module.VisionModelFactory, "create", create_mock
+    )
+    monkeypatch.setattr(
+        payment_receipt_module.VisionModelFactory, "validate_api_key", validate_mock
+    )
+    monkeypatch.setattr(payment_receipt_module, "load_prompt", load_prompt_mock)
+
+    return {
+        "create": create_mock,
+        "validate_api_key": validate_mock,
+        "load_prompt": load_prompt_mock,
+    }
+
+
+def test_happy_path_returns_agent_with_payment_receipt_schema(
+    mocked_deps: dict[str, MagicMock],
+) -> None:
+    agent = create_payment_receipt_agent()
+
+    assert isinstance(agent, Agent)
+    assert agent.output_schema is PaymentReceipt
+    assert agent.instructions == ["PAYMENT RECEIPT PROMPT BODY"]
+    mocked_deps["load_prompt"].assert_called_once_with("payment_receipt")
+
+
+def test_sonnet_model_is_wired_not_haiku(mocked_deps: dict[str, MagicMock]) -> None:
+    """payment_receipt is direction-sensitive — must default to Sonnet, not Haiku."""
+    agent = create_payment_receipt_agent()
+
+    create_kwargs: dict[str, Any] = mocked_deps["create"].call_args.kwargs
+    assert create_kwargs["provider"] == "anthropic"
+    assert create_kwargs["model_id"] == "claude-sonnet-4-6-20260101"
+    assert "haiku" not in create_kwargs["model_id"]
+    # And the resulting model carries the same id (catches a future ctor refactor).
+    assert agent.model is not None
+    assert agent.model.id == "claude-sonnet-4-6-20260101"
+
+
+def test_provider_override_beats_yaml(mocked_deps: dict[str, MagicMock]) -> None:
+    create_payment_receipt_agent(provider="openai")
+
+    create_kwargs: dict[str, Any] = mocked_deps["create"].call_args.kwargs
+    assert create_kwargs["provider"] == "openai"
+    # CLI override only sets provider; model still resolves via YAML.
+    assert create_kwargs["model_id"] == "claude-sonnet-4-6-20260101"
+    mocked_deps["validate_api_key"].assert_called_once_with("openai")
+
+
+def test_each_call_constructs_a_fresh_agent(
+    mocked_deps: dict[str, MagicMock],
+) -> None:
+    """No module-level state — repeated calls must build new Agents."""
+    a = create_payment_receipt_agent()
+    b = create_payment_receipt_agent()
+
+    assert a is not b
+    assert mocked_deps["create"].call_count == 2
+    assert a.model is not b.model
+
+
+def test_no_module_level_agent_attribute() -> None:
+    """Sentinel: the factory module must not expose a pre-built singleton."""
+    public_attrs = {a for a in dir(payment_receipt_module) if not a.startswith("_")}
+    for name in public_attrs:
+        value = getattr(payment_receipt_module, name)
+        assert not isinstance(value, Agent), (
+            f"Module exposes pre-built Agent at {name!r} — violates 'no global Agent' rule"
+        )

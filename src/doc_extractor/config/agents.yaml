@@ -12,3 +12,10 @@ passport:
 classifier:
   provider: anthropic
   model: claude-haiku-4-5-20251001
+
+# Receipt extraction is direction-sensitive (Chinese-label-trust rule, debit/credit
+# semantics). Run on Sonnet — Haiku regressed on inverted-label CN receipts during
+# the lel-audit-2026 migration.
+payment_receipt:
+  provider: anthropic
+  model: claude-sonnet-4-6-20260101
