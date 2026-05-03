@@ -23,6 +23,8 @@ from agno.models.base import Model
 from doc_extractor.agents import registry
 from doc_extractor.agents.registry import FACTORIES, _other_placeholder
 from doc_extractor.schemas.application_form import ApplicationForm
+from doc_extractor.schemas.bank_account_confirmation import BankAccountConfirmation
+from doc_extractor.schemas.bank_statement import BankStatement
 from doc_extractor.schemas.classification import DOC_TYPES
 from doc_extractor.schemas.ids import DriverLicence, NationalID, Passport, Visa
 from doc_extractor.schemas.payment_receipt import PaymentReceipt
@@ -39,11 +41,12 @@ REAL_FACTORIES: dict[str, type] = {
     "PEP_Declaration": PEP_Declaration,
     "VerificationReport": VerificationReport,
     "ApplicationForm": ApplicationForm,
+    # Story 5.2 — Epic 5 bank documents promoted from _other_placeholder
+    "BankStatement": BankStatement,
+    "BankAccountConfirmation": BankAccountConfirmation,
 }
 
 PLACEHOLDER_DOC_TYPES = (
-    "BankStatement",
-    "BankAccountConfirmation",
     "CompanyExtract",
     "EntityOwnership",
     "ProofOfAddress",
@@ -71,6 +74,8 @@ def mocked_factory_deps(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     from doc_extractor.agents import (
         application_form,
+        bank_account_confirmation,
+        bank_statement,
         driver_licence,
         national_id,
         passport,
@@ -94,6 +99,8 @@ def mocked_factory_deps(monkeypatch: pytest.MonkeyPatch) -> None:
         pep_declaration,
         verification_report,
         application_form,
+        bank_statement,
+        bank_account_confirmation,
     ):
         create_mock = MagicMock(side_effect=_make_model)
         validate_mock = MagicMock(return_value="test-api-key")

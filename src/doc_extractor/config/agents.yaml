@@ -65,3 +65,14 @@ verification_report:
 application_form:
   provider: anthropic
   model: claude-sonnet-4-6-20260101
+
+# Epic 5 bank documents — Sonnet for the multi-page header-search discipline
+# (CN bank statements sometimes put the header on page 2/3) and verbatim
+# account-number mask preservation.
+bank_statement:
+  provider: anthropic
+  model: claude-sonnet-4-6-20260101
+
+bank_account_confirmation:
+  provider: anthropic
+  model: claude-sonnet-4-6-20260101

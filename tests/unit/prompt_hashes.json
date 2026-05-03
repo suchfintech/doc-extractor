@@ -3,6 +3,14 @@
     "body_sha256": "e5885a7c15acf26198db429c8cc30b16c9f0ceb93d6b84509b6e69b4df3d7705",
     "version": "0.1.0"
   },
+  "bank_account_confirmation.md": {
+    "body_sha256": "9af2a31337783028b653155bc6e02d0df18ccb4da42657ec18237b1d9ac8214d",
+    "version": "0.1.0"
+  },
+  "bank_statement.md": {
+    "body_sha256": "c0be381128363d903f117b099a37cf3bbf84f617bd3118ba38ef9f44f54b5d72",
+    "version": "0.1.0"
+  },
   "classifier.md": {
     "body_sha256": "5b5279f1f5654fcb915d7929389356c6161d83b6ba8c640adc9e3756b696d3b5",
     "version": "0.1.0"

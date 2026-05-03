@@ -14,6 +14,8 @@ import yaml
 
 from doc_extractor.schemas import (
     ApplicationForm,
+    BankAccountConfirmation,
+    BankStatement,
     DriverLicence,
     NationalID,
     Passport,
@@ -727,4 +729,169 @@ def test_visa_field_order_matches_inheritance() -> None:
         "valid_from",
         "valid_to",
         "entries_allowed",
+    ]
+
+
+# --------------------------------------------------------------------------
+# Story 5.2 — Epic 5 bank documents
+# --------------------------------------------------------------------------
+
+# BankStatement — NZ ANZ savings statement, single-currency. Closing balance
+# is verbatim including the currency prefix; the snapshot pins that the
+# `12,345.67` thousand separator and the `NZD ` prefix round-trip unmodified.
+CANONICAL_BANK_STATEMENT = BankStatement(
+    extractor_version="0.1.0",
+    extraction_provider="anthropic",
+    extraction_model="claude-sonnet-4-6-20260101",
+    extraction_timestamp="2026-05-03T12:00:00Z",
+    prompt_version="bank_statement@0.1.0",
+    doc_type="BankStatement",
+    doc_subtype="",
+    jurisdiction="NZ",
+    name_latin="",
+    name_cjk="",
+    bank_name="ANZ Bank New Zealand",
+    account_holder_name="John Doe",
+    account_number="02-0248-0242329-02",
+    account_type="savings",
+    currency="NZD",
+    statement_period_start="2025-06-01",
+    statement_period_end="2025-06-30",
+    statement_date="2025-07-01",
+    closing_balance="NZD 12,345.67",
+)
+
+EXPECTED_BANK_STATEMENT_YAML = """\
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T12:00:00Z'
+prompt_version: bank_statement@0.1.0
+doc_type: BankStatement
+doc_subtype: ''
+jurisdiction: NZ
+name_latin: ''
+name_cjk: ''
+bank_name: ANZ Bank New Zealand
+account_holder_name: John Doe
+account_number: 02-0248-0242329-02
+account_type: savings
+currency: NZD
+statement_period_start: '2025-06-01'
+statement_period_end: '2025-06-30'
+statement_date: '2025-07-01'
+closing_balance: NZD 12,345.67
+"""
+
+
+def _dump_bs(bs: BankStatement) -> str:
+    return yaml.safe_dump(bs.model_dump(), allow_unicode=True, sort_keys=False)
+
+
+def test_canonical_bank_statement_yaml_is_byte_stable() -> None:
+    assert _dump_bs(CANONICAL_BANK_STATEMENT) == EXPECTED_BANK_STATEMENT_YAML
+
+
+def test_canonical_bank_statement_dump_is_idempotent() -> None:
+    assert _dump_bs(CANONICAL_BANK_STATEMENT) == _dump_bs(CANONICAL_BANK_STATEMENT)
+
+
+def test_bank_statement_preserves_account_number_hyphens_verbatim() -> None:
+    """Account-number masks/hyphens round-trip byte-for-byte (FR25/FR26)."""
+    dumped = _dump_bs(CANONICAL_BANK_STATEMENT)
+    assert "02-0248-0242329-02" in dumped
+
+
+# BankAccountConfirmation — NZ bank letter, current account.
+CANONICAL_BANK_ACCOUNT_CONFIRMATION = BankAccountConfirmation(
+    extractor_version="0.1.0",
+    extraction_provider="anthropic",
+    extraction_model="claude-sonnet-4-6-20260101",
+    extraction_timestamp="2026-05-03T12:00:00Z",
+    prompt_version="bank_account_confirmation@0.1.0",
+    doc_type="BankAccountConfirmation",
+    doc_subtype="",
+    jurisdiction="NZ",
+    name_latin="",
+    name_cjk="",
+    bank_name="ANZ Bank New Zealand",
+    account_holder_name="Jane Smith",
+    account_number="02-0248-0242329-02",
+    account_type="current",
+    currency="NZD",
+    confirmation_date="2026-04-15",
+    confirmation_authority="Sarah Chen, Branch Manager",
+)
+
+EXPECTED_BANK_ACCOUNT_CONFIRMATION_YAML = """\
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T12:00:00Z'
+prompt_version: bank_account_confirmation@0.1.0
+doc_type: BankAccountConfirmation
+doc_subtype: ''
+jurisdiction: NZ
+name_latin: ''
+name_cjk: ''
+bank_name: ANZ Bank New Zealand
+account_holder_name: Jane Smith
+account_number: 02-0248-0242329-02
+account_type: current
+currency: NZD
+confirmation_date: '2026-04-15'
+confirmation_authority: Sarah Chen, Branch Manager
+"""
+
+
+def _dump_bac(bac: BankAccountConfirmation) -> str:
+    return yaml.safe_dump(bac.model_dump(), allow_unicode=True, sort_keys=False)
+
+
+def test_canonical_bank_account_confirmation_yaml_is_byte_stable() -> None:
+    assert (
+        _dump_bac(CANONICAL_BANK_ACCOUNT_CONFIRMATION)
+        == EXPECTED_BANK_ACCOUNT_CONFIRMATION_YAML
+    )
+
+
+def test_bank_documents_share_bank_doc_base_field_order() -> None:
+    """Both bank schemas inherit BankDocBase identically — Frontmatter →
+    BankDocBase → specific additions, in declaration order."""
+    bs_keys = list(BankStatement.model_fields.keys())
+    bac_keys = list(BankAccountConfirmation.model_fields.keys())
+
+    common_prefix = [
+        # Frontmatter
+        "extractor_version",
+        "extraction_provider",
+        "extraction_model",
+        "extraction_timestamp",
+        "prompt_version",
+        "doc_type",
+        "doc_subtype",
+        "jurisdiction",
+        "name_latin",
+        "name_cjk",
+        # BankDocBase
+        "bank_name",
+        "account_holder_name",
+        "account_number",
+        "account_type",
+        "currency",
+    ]
+    assert bs_keys[: len(common_prefix)] == common_prefix
+    assert bac_keys[: len(common_prefix)] == common_prefix
+
+    # BankStatement-specific tail
+    assert bs_keys[len(common_prefix) :] == [
+        "statement_period_start",
+        "statement_period_end",
+        "statement_date",
+        "closing_balance",
+    ]
+    # BankAccountConfirmation-specific tail
+    assert bac_keys[len(common_prefix) :] == [
+        "confirmation_date",
+        "confirmation_authority",
     ]

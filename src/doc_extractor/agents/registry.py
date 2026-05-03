@@ -41,6 +41,10 @@ from collections.abc import Callable
 from agno.agent import Agent
 
 from doc_extractor.agents.application_form import create_application_form_agent
+from doc_extractor.agents.bank_account_confirmation import (
+    create_bank_account_confirmation_agent,
+)
+from doc_extractor.agents.bank_statement import create_bank_statement_agent
 from doc_extractor.agents.driver_licence import create_driver_licence_agent
 from doc_extractor.agents.national_id import create_national_id_agent
 from doc_extractor.agents.passport import create_passport_agent
@@ -79,9 +83,11 @@ FACTORIES: dict[str, AgentFactory] = {
     "PEP_Declaration": create_pep_declaration_agent,
     "VerificationReport": create_verification_report_agent,
     "ApplicationForm": create_application_form_agent,
+    # Epic 5 — bank documents (Story 5.2). BankStatement uses
+    # `pdf_to_images(mode="all_pages")` per `_pdf_mode_for` in vision_path.
+    "BankStatement": create_bank_statement_agent,
+    "BankAccountConfirmation": create_bank_account_confirmation_agent,
     # Epic 5 — placeholders (replace with real factories as each ships):
-    "BankStatement": _other_placeholder,
-    "BankAccountConfirmation": _other_placeholder,
     "CompanyExtract": _other_placeholder,
     "EntityOwnership": _other_placeholder,
     "ProofOfAddress": _other_placeholder,
