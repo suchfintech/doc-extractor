@@ -1,0 +1,42 @@
+{
+  "application_form.md": {
+    "body_sha256": "e5885a7c15acf26198db429c8cc30b16c9f0ceb93d6b84509b6e69b4df3d7705",
+    "version": "0.1.0"
+  },
+  "classifier.md": {
+    "body_sha256": "5b5279f1f5654fcb915d7929389356c6161d83b6ba8c640adc9e3756b696d3b5",
+    "version": "0.1.0"
+  },
+  "driver_licence.md": {
+    "body_sha256": "12414858d055a1a94b0d659e3b5f397d53d6b23d9fe4210623ad9b54ceb38721",
+    "version": "0.1.0"
+  },
+  "national_id.md": {
+    "body_sha256": "31aae58af476610e908070b476b138198e51cb047123badac61e5e480b87a22f",
+    "version": "0.1.0"
+  },
+  "passport.md": {
+    "body_sha256": "c3fd00dee757c73683da1b64ccce44aa66e5580569d074265c44b8e9267ae782",
+    "version": "0.1.0"
+  },
+  "payment_receipt.md": {
+    "body_sha256": "9cd63b4e2082ff8fc0eaed97027b1b477e1b07f7592c2da1a3edb5478334d2bc",
+    "version": "0.1.0"
+  },
+  "pep_declaration.md": {
+    "body_sha256": "4455ee7b8391bb412ccaba4d716ae70253b25f9974e2247a85dc5a937a4ceaa5",
+    "version": "0.1.0"
+  },
+  "verification_report.md": {
+    "body_sha256": "cdb12a48246e67d3e96d45f8c876cc1de3020edc8dbcf248c29ccd8929d3b506",
+    "version": "0.1.0"
+  },
+  "verifier.md": {
+    "body_sha256": "480b5d21c353e2c3eb6b263f0d90680640d8942f4021fba42e74d7755406b709",
+    "version": "0.1.0"
+  },
+  "visa.md": {
+    "body_sha256": "8155d7456b97ea40c058201e18bfe87d967e864d7e5d9f74e08a6ad761cb8e72",
+    "version": "0.1.0"
+  }
+}
