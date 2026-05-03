@@ -26,3 +26,10 @@ payment_receipt:
 driver_licence:
   provider: anthropic
   model: claude-sonnet-4-6-20260101
+
+# National ID cards — Sonnet because the CN 居民身份证 carries embedded DOB
+# (positions 7-14) and gender (position 17) that the model cross-checks against
+# the printed face, and HK/SG/TW formats need precise mask-preservation.
+national_id:
+  provider: anthropic
+  model: claude-sonnet-4-6-20260101

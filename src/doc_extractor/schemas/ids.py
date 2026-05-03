@@ -33,3 +33,10 @@ class DriverLicence(IDDocBase):
     licence_endorsements: str | None = ""
     licence_restrictions: str | None = ""
     address: str | None = ""
+
+
+class NationalID(IDDocBase):
+    nationality: str | None = ""
+    id_card_number: str | None = ""
+    issuing_authority: str | None = ""
+    address: str | None = ""

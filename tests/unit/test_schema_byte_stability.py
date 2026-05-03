@@ -12,7 +12,7 @@ from datetime import date
 
 import yaml
 
-from doc_extractor.schemas import DriverLicence, Passport, PaymentReceipt
+from doc_extractor.schemas import DriverLicence, NationalID, Passport, PaymentReceipt
 
 CANONICAL_PASSPORT = Passport(
     extractor_version="0.1.0",
@@ -338,5 +338,121 @@ def test_driver_licence_field_order_matches_inheritance() -> None:
         "licence_class",
         "licence_endorsements",
         "licence_restrictions",
+        "address",
+    ]
+
+
+# --------------------------------------------------------------------------
+# NationalID — Story 4.2
+# --------------------------------------------------------------------------
+
+# Canonical CN 居民身份证. The 18-digit id_card_number embeds DOB at positions
+# 7-14 (`19900315`) and gender at position 17 (`1` → male) — the snapshot
+# below is consistent with both the printed `dob` and `sex` fields. PyYAML
+# quotes the all-digit ID strings because they would otherwise parse as ints
+# on round-trip; the snapshot pins that quoting too.
+CANONICAL_NATIONAL_ID = NationalID(
+    extractor_version="0.1.0",
+    extraction_provider="anthropic",
+    extraction_model="claude-sonnet-4-6-20260101",
+    extraction_timestamp="2026-05-03T12:00:00Z",
+    prompt_version="national_id@0.1.0",
+    doc_type="NationalID",
+    doc_subtype="",
+    jurisdiction="CN",
+    name_latin="",
+    name_cjk="张三",
+    doc_number="110101199003150019",
+    dob="1990-03-15",
+    issue_date="2020-06-01",
+    expiry_date="2040-05-31",
+    place_of_birth="",
+    sex="M",
+    nationality="中国",
+    id_card_number="110101199003150019",
+    issuing_authority="北京市公安局朝阳分局",
+    address="北京市朝阳区建国门外大街1号",
+)
+
+EXPECTED_NATIONAL_ID_YAML = """\
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T12:00:00Z'
+prompt_version: national_id@0.1.0
+doc_type: NationalID
+doc_subtype: ''
+jurisdiction: CN
+name_latin: ''
+name_cjk: 张三
+doc_number: '110101199003150019'
+dob: '1990-03-15'
+issue_date: '2020-06-01'
+expiry_date: '2040-05-31'
+place_of_birth: ''
+sex: M
+nationality: 中国
+id_card_number: '110101199003150019'
+issuing_authority: 北京市公安局朝阳分局
+address: 北京市朝阳区建国门外大街1号
+"""
+
+
+def _dump_nid(nid: NationalID) -> str:
+    return yaml.safe_dump(
+        nid.model_dump(),
+        allow_unicode=True,
+        sort_keys=False,
+    )
+
+
+def test_canonical_national_id_yaml_is_byte_stable() -> None:
+    assert _dump_nid(CANONICAL_NATIONAL_ID) == EXPECTED_NATIONAL_ID_YAML
+
+
+def test_canonical_national_id_dump_is_idempotent() -> None:
+    assert _dump_nid(CANONICAL_NATIONAL_ID) == _dump_nid(CANONICAL_NATIONAL_ID)
+
+
+def test_national_id_preserves_cjk_and_id_number_verbatim() -> None:
+    """CJK round-trip + the 18-digit ID survives unquoted-int coercion."""
+    dumped = _dump_nid(CANONICAL_NATIONAL_ID)
+    # CJK characters appear raw, not as \\uXXXX escapes.
+    assert "张三" in dumped
+    assert "北京市朝阳区建国门外大街1号" in dumped
+    assert "中国" in dumped
+    assert "\\u" not in dumped
+    # The 18-digit ID survives byte-equal — quoted so PyYAML doesn't reparse
+    # it as an integer on round-trip (which would lose leading-zero context
+    # and break the embedded DOB/gender encoding).
+    assert "'110101199003150019'" in dumped
+
+
+def test_national_id_field_order_matches_inheritance() -> None:
+    """Frontmatter → IDDocBase → NationalID additions, in declaration order."""
+    keys = list(NationalID.model_fields.keys())
+    assert keys == [
+        # Frontmatter
+        "extractor_version",
+        "extraction_provider",
+        "extraction_model",
+        "extraction_timestamp",
+        "prompt_version",
+        "doc_type",
+        "doc_subtype",
+        "jurisdiction",
+        "name_latin",
+        "name_cjk",
+        # IDDocBase
+        "doc_number",
+        "dob",
+        "issue_date",
+        "expiry_date",
+        "place_of_birth",
+        "sex",
+        # NationalID additions
+        "nationality",
+        "id_card_number",
+        "issuing_authority",
         "address",
     ]
