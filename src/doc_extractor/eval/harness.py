@@ -41,6 +41,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_GOLDEN_DIR = Path("tests/golden")
 DEFAULT_EVAL_CONCURRENCY = 20
 
+# Story 8.7 / NFR7 — full eval-run cost ceiling. Above this, the harness
+# sets ``Scorecard.cost_breach = True`` and emits a logging.warning;
+# .github/workflows/eval.yml fails the workflow on the breach flag.
+EVAL_COST_CEILING_USD = 15.00
+
 IMAGE_SUFFIXES: tuple[str, ...] = (".jpeg", ".jpg", ".png", ".pdf")
 
 # Provenance fields are run-specific metadata and don't reflect extraction
@@ -157,6 +162,7 @@ async def run_eval(
     max_concurrent: int = DEFAULT_EVAL_CONCURRENCY,
     golden_dir: Path | None = None,
     extract_batch_fn: Callable[..., Awaitable[list[ExtractedDoc]]] | None = None,
+    cost_ceiling_usd: float = EVAL_COST_CEILING_USD,
 ) -> Scorecard:
     """Run the eval harness over the golden corpus and return a Scorecard.
 
@@ -220,4 +226,12 @@ async def run_eval(
             )
         )
 
-    return Scorecard.from_results(rows)
+    scorecard = Scorecard.from_results(rows)
+    if scorecard.total_cost_usd > cost_ceiling_usd:
+        logger.warning(
+            "Eval-run cost ceiling breached: $%.2f (limit $%.2f)",
+            scorecard.total_cost_usd,
+            cost_ceiling_usd,
+        )
+        scorecard = scorecard.model_copy(update={"cost_breach": True})
+    return scorecard

@@ -29,3 +29,29 @@ jobs:
       # PR maintainers don't have to add it later.
       - name: Eval (stub — Stories 2.4-2.6 pending)
         run: echo "Eval harness not yet shipped — placeholder until Stories 2.4/2.5/2.6 land"
+      # Story 8.7 / NFR7 — the eval-run cost ceiling. ``run_eval`` flips
+      # ``Scorecard.cost_breach`` to True when ``total_cost_usd`` exceeds
+      # $15. CI consumes the latest scorecard JSON (whichever Stories
+      # 2.5/2.6 commit during the run) and fails the workflow on breach.
+      # No-op when no scorecard exists yet (eval harness or commit step
+      # not wired).
+      - name: Eval cost-ceiling check
+        run: |
+          LATEST=$(ls -t tests/scorecards/*.json 2>/dev/null | head -1)
+          if [ -z "$LATEST" ]; then
+            echo "no scorecard — skipping"
+            exit 0
+          fi
+          BREACH=$(.venv/bin/python -c "import json; print(json.load(open('$LATEST'))['cost_breach'])")
+          if [ "$BREACH" = "True" ]; then
+            COST=$(.venv/bin/python -c "import json; print(json.load(open('$LATEST'))['total_cost_usd'])")
+            echo "Eval cost ceiling breached: \$$COST (limit \$15.00)"
+            exit 1
+          fi
+      # Story 2.6 / NFR18 — per-agent regression gate. Reads the latest
+      # scorecard JSON and fails when any agent.field match_rate drops
+      # below its threshold in src/doc_extractor/eval/thresholds.yaml.
+      # Permissive when no scorecard exists yet (Stories 2.4/2.5 wire the
+      # `doc-extractor eval` invocation that produces the JSON).
+      - name: Eval per-agent threshold check
+        run: .venv/bin/python scripts/check_eval_thresholds.py

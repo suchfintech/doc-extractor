@@ -107,6 +107,14 @@ class Scorecard(BaseModel):
     total_cost_usd: float = 0.0
     extractor_version: str
     run_timestamp: str
+    cost_breach: bool = Field(
+        default=False,
+        description=(
+            "Story 8.7 / NFR7. Set to True by run_eval when total_cost_usd "
+            "exceeds the eval-run cost ceiling (default $15.00). CI consumes "
+            "via .github/workflows/eval.yml — workflow fails on True."
+        ),
+    )
 
     @classmethod
     def from_results(

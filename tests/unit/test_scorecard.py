@@ -213,3 +213,21 @@ def test_safe_division_when_all_actuals_or_expecteds_are_empty() -> None:
     assert metrics.recall == 0.0
     # JSON survives stdlib parsing — no NaN slipped through.
     json.loads(sc.to_json())
+
+
+# --------------------------------------------------------------------------
+# Story 8.7 — cost_breach field (NFR7)
+# --------------------------------------------------------------------------
+
+
+def test_cost_breach_defaults_false_and_round_trips_through_json() -> None:
+    sc = Scorecard.from_results([], extractor_version="0.1.0")
+    assert sc.cost_breach is False
+    assert json.loads(sc.to_json())["cost_breach"] is False
+
+    sc_breached = sc.model_copy(update={"cost_breach": True})
+    payload = json.loads(sc_breached.to_json())
+    assert payload["cost_breach"] is True
+
+    rehydrated = Scorecard.model_validate(payload)
+    assert rehydrated.cost_breach is True
