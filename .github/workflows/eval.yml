@@ -1,0 +1,31 @@
+name: Eval
+
+on:
+  pull_request:
+    paths:
+      - 'src/doc_extractor/agents/**'
+      - 'src/doc_extractor/prompts/**'
+      - 'src/doc_extractor/schemas/**'
+      - 'src/doc_extractor/config/**'
+      - 'tests/golden/**'
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install uv
+        run: pip install uv
+      - name: Install dependencies
+        run: uv venv .venv --python 3.12 && uv pip install --python .venv/bin/python -e ".[dev]"
+      # TODO Stories 2.4 (eval harness) / 2.5 (CLI) / 2.6 (thresholds)
+      # — replace this stub with: run `doc-extractor eval`, commit the
+      # scorecard JSON, threshold-check against the rolling baseline,
+      # and fail if any specialist drops below its agreed floor. Until
+      # then this job exists so the path-trigger filter is wired and
+      # PR maintainers don't have to add it later.
+      - name: Eval (stub — Stories 2.4-2.6 pending)
+        run: echo "Eval harness not yet shipped — placeholder until Stories 2.4/2.5/2.6 land"

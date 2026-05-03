@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install uv
+        run: pip install uv
+      - name: Install dependencies
+        run: uv venv .venv --python 3.12 && uv pip install --python .venv/bin/python -e ".[dev]"
+      - name: Ruff check
+        run: .venv/bin/ruff check .
+      - name: Ruff format check
+        run: .venv/bin/ruff format --check .
+      - name: Mypy strict
+        run: .venv/bin/mypy --strict src/doc_extractor
+      - name: Pytest (unit + integration + canonical)
+        run: .venv/bin/pytest tests/
+      # TODO Story 2.7 — drop the `if [ -f ... ]` guard once
+      # scripts/verify_canonical.py ships. The CI gate then becomes a
+      # plain invocation; the YAML-validation test in
+      # tests/unit/test_workflows_yaml.py has a sentinel that fires
+      # when the file appears so this stub doesn't go stale.
+      - name: Verify canonical (stub — Story 2.7)
+        run: |
+          if [ -f scripts/verify_canonical.py ]; then
+            .venv/bin/python scripts/verify_canonical.py
+          else
+            echo "Story 2.7 not yet shipped — skipping verify_canonical"
+          fi
+      - name: Cost-ceiling check
+        run: .venv/bin/python scripts/check_cost_ceiling.py
