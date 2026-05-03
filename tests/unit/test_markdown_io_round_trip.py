@@ -85,8 +85,16 @@ def test_parse_md_dispatches_to_passport_subclass_via_doc_type() -> None:
 
 def test_parse_md_falls_back_to_frontmatter_for_unknown_doc_type() -> None:
     # A bare Frontmatter (doc_type left empty) must round-trip without
-    # tripping the dispatch table.
-    fm = Frontmatter(doc_type="", jurisdiction="HKG", name_latin="ALEX")
+    # tripping the dispatch table. Provenance fields are pinned so the
+    # Story 7.5 auto-fill (extractor_version / extraction_timestamp) is a
+    # no-op — preserves the byte-equal-after-roundtrip contract.
+    fm = Frontmatter(
+        extractor_version="0.1.0",
+        extraction_timestamp="2026-05-03T00:00:00Z",
+        doc_type="",
+        jurisdiction="HKG",
+        name_latin="ALEX",
+    )
     md = render_to_md(fm)
     parsed = parse_md(md)
     assert type(parsed) is Frontmatter

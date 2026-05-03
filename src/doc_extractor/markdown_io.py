@@ -12,6 +12,7 @@ normalisation (FR25, FR26).
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import yaml  # type: ignore[import-untyped]  # dev-dep `types-PyYAML` not yet wired
@@ -20,6 +21,35 @@ from doc_extractor.schemas import Frontmatter, Passport
 from doc_extractor.schemas.payment_receipt import PaymentReceipt
 
 _FENCE = "---"
+
+
+def _now_iso8601() -> str:
+    """Return the current UTC time as ISO 8601 with the ``Z`` suffix.
+
+    Module-level hook so tests can monkeypatch a fixed clock without
+    poking at ``datetime`` itself.
+    """
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _autofill_provenance(data: dict[str, Any]) -> None:
+    """Populate ``extractor_version`` and ``extraction_timestamp`` if empty.
+
+    Caller-set values win — pre-populated provenance fields render verbatim
+    so deterministic snapshots can pin a fixed timestamp / version. The
+    other three provenance fields (``extraction_provider``,
+    ``extraction_model``, ``prompt_version``) belong to the pipeline
+    orchestrator (Story 7.5 §3) — this helper does NOT touch them.
+    """
+    if not data.get("extractor_version"):
+        # Lazy import to dodge the ``doc_extractor.__init__`` circular path
+        # — markdown_io is imported during package init via the schemas
+        # subtree.
+        from doc_extractor import __version__ as _ext_v
+
+        data["extractor_version"] = _ext_v
+    if not data.get("extraction_timestamp"):
+        data["extraction_timestamp"] = _now_iso8601()
 
 # `Frontmatter` itself has `extra="forbid"`, so subclass-specific keys would
 # fail to validate against the base class. Dispatch on `doc_type` to the
@@ -52,7 +82,18 @@ def _apply_deprecated_alias_dual_emit(
 
 
 def render_to_md(frontmatter: Frontmatter) -> str:
+    """Render a Frontmatter (or subclass) to YAML-frontmatter Markdown.
+
+    Story 7.5 — auto-fills ``extractor_version`` (from
+    ``doc_extractor.__version__``) and ``extraction_timestamp`` (current
+    UTC, ISO 8601 with ``Z`` suffix) when those fields are empty. Caller-
+    supplied values win, so deterministic snapshots can pin both. The
+    pipeline-supplied provenance fields (``extraction_provider``,
+    ``extraction_model``, ``prompt_version``) are populated by
+    ``pipelines.vision_path`` before render.
+    """
     data = frontmatter.model_dump()
+    _autofill_provenance(data)
     _apply_deprecated_alias_dual_emit(type(frontmatter), data)
     body = yaml.safe_dump(
         data,
