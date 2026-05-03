@@ -36,3 +36,5 @@ comment in `factory.py` references this file as the gate.
    before pushing — the gate fails CI otherwise.
 4. If the vendor's terms change between reviews, bump the `Retrieval date`
    and update the URL / clauses as needed.
+
+**See also**: [docs/iam-policies.md](./iam-policies.md) — consumer-role disagreements/* deny rule.
