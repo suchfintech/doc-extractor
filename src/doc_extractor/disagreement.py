@@ -45,7 +45,7 @@ def _disagreement_key_for(source_key: str) -> str:
 def record_disagreement(
     *,
     source_key: str,
-    primary: BaseModel,
+    primary: BaseModel | None,
     verifier: VerifierAudit | None,
     status: DisagreementStatus,
     extractor_version: str | None = None,
@@ -55,7 +55,8 @@ def record_disagreement(
     The entry is a single JSON object with six top-level fields:
 
     - ``source_key`` — the original document key.
-    - ``primary`` — ``primary.model_dump()`` of whatever the specialist returned.
+    - ``primary`` — ``primary.model_dump()`` or ``null`` (Story 3.8 — the
+      validation-failure path has no valid Pydantic instance to dump).
     - ``verifier`` — ``verifier.model_dump()`` or ``null`` (validation-failure
       / provider-unavailable paths can't produce a verifier audit).
     - ``agreement_status`` — one of the documented status strings.
@@ -65,7 +66,7 @@ def record_disagreement(
     """
     entry: dict[str, object] = {
         "source_key": source_key,
-        "primary": primary.model_dump(),
+        "primary": primary.model_dump() if primary is not None else None,
         "verifier": verifier.model_dump() if verifier is not None else None,
         "agreement_status": status,
         "timestamp": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),

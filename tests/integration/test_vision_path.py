@@ -99,6 +99,7 @@ async def test_happy_path_writes_passport_markdown(
         "doc_type": "Passport",
         "verifier_audit": None,
         "disagreement_key": None,
+        "retry_count": 0,
     }
     patched_io["head"].assert_called_once_with(EXPECTED_ANALYSIS_KEY)
     patched_io["presign"].assert_called_once()
@@ -138,6 +139,7 @@ async def test_head_skip_short_circuits_before_provider(
         "doc_type": "",
         "verifier_audit": None,
         "disagreement_key": None,
+        "retry_count": 0,
     }
     patched_io["head"].assert_called_once_with(EXPECTED_ANALYSIS_KEY)
     patched_io["presign"].assert_not_called()
@@ -474,3 +476,102 @@ async def test_disagreement_NOT_written_for_passport_route(
 
     assert captured_disagreement_calls == []
     assert result["disagreement_key"] is None
+
+
+# ---------------------------------------------------------------------------
+# Story 3.8 — validation_failure path on PaymentReceipt branch
+# ---------------------------------------------------------------------------
+
+
+def _pydantic_validation_error() -> Any:
+    """A real PydanticValidationError instance, constructed via failing validate."""
+    from pydantic import BaseModel, ValidationError
+
+    class _Strict(BaseModel):
+        required_field: str
+
+    try:
+        _Strict.model_validate({})
+    except ValidationError as exc:
+        return exc
+    raise RuntimeError("expected ValidationError")
+
+
+@pytest.mark.asyncio
+async def test_validation_failure_writes_disagreement_with_status_validation_failure(
+    patched_io: dict[str, MagicMock],
+    captured_disagreement_calls: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the retry layer exhausts and re-raises PydanticValidationError,
+    vision_path must write a disagreement entry with status="validation_failure"
+    (primary=None, verifier=None) before the exception propagates."""
+    from doc_extractor.exceptions import PydanticValidationError
+
+    classifier_agent, _ = _make_async_agent(
+        Classification(doc_type="PaymentReceipt", jurisdiction="CN")
+    )
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+
+    err = _pydantic_validation_error()
+
+    async def fake_retry(
+        _factory: Any,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> tuple[Any, int]:
+        # Simulate retry-exhausted: the primary was already top-tier, so
+        # PydanticValidationError propagates without retry. Mirrors the
+        # contract that vision_path catches.
+        raise err
+
+    monkeypatch.setattr(vision_path, "with_validation_retry", fake_retry)
+
+    with pytest.raises(PydanticValidationError):
+        await vision_path.run(PR_SOURCE_KEY)
+
+    # Disagreement was written with the validation_failure status.
+    assert len(captured_disagreement_calls) == 1
+    call = captured_disagreement_calls[0]
+    assert call["source_key"] == PR_SOURCE_KEY
+    assert call["primary"] is None
+    assert call["verifier"] is None
+    assert call["status"] == "validation_failure"
+    # No analysis .md was written — the run never produced a valid
+    # specialist instance.
+    patched_io["write"].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_retry_count_propagates_to_result_dict(
+    patched_io: dict[str, MagicMock],
+    captured_disagreement_calls: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When with_validation_retry returns retry_count=1 (escalated success),
+    the result dict surfaces it for downstream observability."""
+    classifier_agent, _ = _make_async_agent(
+        Classification(doc_type="PaymentReceipt", jurisdiction="CN")
+    )
+    verifier_agent, _ = _make_async_agent(_verifier_audit_fixture("pass"))
+
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+
+    receipt = _payment_receipt_fixture()
+
+    async def fake_retry(
+        _factory: Any,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> tuple[Any, int]:
+        return receipt, 1  # simulated escalation success
+
+    monkeypatch.setattr(vision_path, "with_validation_retry", fake_retry)
+
+    result = await vision_path.run(PR_SOURCE_KEY)
+
+    assert result["retry_count"] == 1
+    assert result["doc_type"] == "PaymentReceipt"
+    # No disagreement on a successful (post-retry) run with verifier=pass.
+    assert captured_disagreement_calls == []

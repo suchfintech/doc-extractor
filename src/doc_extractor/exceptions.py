@@ -2,6 +2,20 @@
 
 from __future__ import annotations
 
+# Story 3.8 — re-export Pydantic's ValidationError under a project-local
+# alias so the retry layer / pipeline can catch one symbol without dragging
+# pydantic into every call-site's import surface.
+from pydantic import ValidationError as PydanticValidationError
+
+__all__ = [
+    "AuthenticationError",
+    "BodyParseUnmatchedError",
+    "ConfigurationError",
+    "DocExtractorError",
+    "PDFConversionError",
+    "PydanticValidationError",
+]
+
 
 class DocExtractorError(Exception):
     """Base for all doc-extractor errors."""

@@ -18,15 +18,18 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from agno.agent import Agent
 from agno.media import Image
 
 from doc_extractor import __version__, markdown_io, s3_io
 from doc_extractor.agents.classifier import create_classifier_agent
 from doc_extractor.agents.passport import create_passport_agent
 from doc_extractor.agents.payment_receipt import create_payment_receipt_agent
+from doc_extractor.agents.retry import with_validation_retry
 from doc_extractor.agents.verifier import create_verifier_agent
 from doc_extractor.config.precedence import resolve_agent_config
 from doc_extractor.disagreement import record_disagreement
+from doc_extractor.exceptions import PydanticValidationError
 from doc_extractor.pdf.converter import PdfMode, pdf_to_images
 from doc_extractor.prompts.loader import load_prompt
 from doc_extractor.schemas.base import Frontmatter
@@ -128,6 +131,7 @@ async def run(source_key: str) -> dict[str, Any]:
             "doc_type": "",
             "verifier_audit": None,
             "disagreement_key": None,
+            "retry_count": 0,
         }
 
     image = _build_image_for_source(source_key)
@@ -142,6 +146,7 @@ async def run(source_key: str) -> dict[str, Any]:
 
     extracted: Passport | PaymentReceipt
     verifier_audit: VerifierAudit | None = None
+    retry_count: int = 0
 
     if classification.doc_type == "Passport":
         passport_agent = create_passport_agent()
@@ -155,22 +160,48 @@ async def run(source_key: str) -> dict[str, Any]:
         extracted = passport
 
     elif classification.doc_type == "PaymentReceipt":
-        payment_receipt_agent = create_payment_receipt_agent()
-        extraction_result = await payment_receipt_agent.arun(
-            PAYMENT_RECEIPT_INPUT, images=[image]
-        )
-        receipt = extraction_result.content
-        if not isinstance(receipt, PaymentReceipt):
+        # Story 3.8 — wrap the specialist call in with_validation_retry so a
+        # PydanticValidationError on the first attempt triggers one retry on
+        # an escalated tier. Specialists default to Sonnet (top-tier), so in
+        # production today the retry path won't escalate; the wrapping is
+        # forward-compat and exercises the validation_failure → disagreement
+        # queue branch.
+        def _pr_factory(_tier: str) -> Agent:
+            return create_payment_receipt_agent()
+
+        try:
+            content, retry_count = await with_validation_retry(
+                _pr_factory,
+                PAYMENT_RECEIPT_INPUT,
+                agent_name="payment_receipt",
+                source_key=source_key,
+                primary_provider="anthropic-sonnet",
+                arun_kwargs={"images": [image]},
+                doc_type="PaymentReceipt",
+            )
+        except PydanticValidationError:
+            # No more retries possible — route to disagreement queue and
+            # propagate so the caller surfaces the failure.
+            record_disagreement(
+                source_key=source_key,
+                primary=None,
+                verifier=None,
+                status="validation_failure",
+                extractor_version=__version__,
+            )
+            raise
+
+        if not isinstance(content, PaymentReceipt):
             raise TypeError(
-                f"PaymentReceipt agent returned {type(receipt).__name__},"
+                f"PaymentReceipt retry returned {type(content).__name__},"
                 f" expected PaymentReceipt"
             )
-        _populate_pipeline_provenance(receipt, agent_name="payment_receipt")
-        extracted = receipt
+        _populate_pipeline_provenance(content, agent_name="payment_receipt")
+        extracted = content
 
         # Story 3.7 — verifier audit on PaymentReceipt. Story 4.4 expands
         # this to the ID-document family.
-        verifier_input = json.dumps(receipt.model_dump(), ensure_ascii=False, indent=2)
+        verifier_input = json.dumps(content.model_dump(), ensure_ascii=False, indent=2)
         verifier_agent = create_verifier_agent()
         verifier_result = await verifier_agent.arun(verifier_input, images=[image])
         audit = verifier_result.content
@@ -208,4 +239,5 @@ async def run(source_key: str) -> dict[str, Any]:
         "doc_type": classification.doc_type,
         "verifier_audit": verifier_audit.model_dump() if verifier_audit else None,
         "disagreement_key": disagreement_key,
+        "retry_count": retry_count,
     }
