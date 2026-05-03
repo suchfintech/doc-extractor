@@ -13,7 +13,6 @@ non-introspective fast path delegates to :func:`pipelines.vision_path.run`.
 
 from __future__ import annotations
 
-import asyncio
 import time
 
 from agno.media import Image
@@ -27,8 +26,12 @@ from doc_extractor.prompts.loader import load_prompt
 from doc_extractor.schemas.classification import Classification
 from doc_extractor.schemas.ids import Passport
 
-CLASSIFIER_INPUT = vision_path.CLASSIFIER_INPUT
-PASSPORT_INPUT = vision_path.PASSPORT_INPUT
+# Inlined string constants — a previous version reached into vision_path
+# for these, which produced a static-import cycle once batch.py joined the
+# graph (vision_path → agents.retry → doc_extractor → extract → vision_path).
+# The bytes here must stay in sync with the same constants on vision_path.
+CLASSIFIER_INPUT = "Classify this document image."
+PASSPORT_INPUT = "Extract the passport fields from this image."
 
 DEFAULT_BATCH_CONCURRENCY = 10
 
@@ -150,23 +153,11 @@ async def extract(
     )
 
 
-async def extract_batch(
-    keys: list[str], *, max_concurrent: int = DEFAULT_BATCH_CONCURRENCY
-) -> list[ExtractedDoc]:
-    """Extract many documents with bounded concurrency.
+# Story 8.5 — extract_batch lives in ``pipelines.batch`` so the CLI batch
+# surface and the rate-limit retry shell have a dedicated home. Re-imported
+# here at module bottom (after ``extract`` / ``ExtractedDoc`` are defined)
+# so the public API stays at ``from doc_extractor.extract import
+# extract_batch`` and ``from doc_extractor import extract_batch``.
+from doc_extractor.pipelines.batch import extract_batch  # noqa: E402
 
-    Each key independently HEAD-skips inside :func:`extract`. A semaphore
-    bounds concurrent provider calls so a large batch over a partially
-    extracted prefix doesn't hammer the model APIs — Story 8.5 will tune
-    the bound and add rate-limit retry. Results return in input order.
-    """
-    if max_concurrent <= 0:
-        raise ValueError(f"max_concurrent must be positive, got {max_concurrent}")
-
-    semaphore = asyncio.Semaphore(max_concurrent)
-
-    async def _bounded(k: str) -> ExtractedDoc:
-        async with semaphore:
-            return await extract(k)
-
-    return await asyncio.gather(*(_bounded(k) for k in keys))
+__all__ = ["DEFAULT_BATCH_CONCURRENCY", "ExtractedDoc", "extract", "extract_batch"]

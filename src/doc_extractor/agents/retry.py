@@ -17,16 +17,68 @@ same ``source_key``. ``success=False`` is recorded for failed attempts.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
+import random
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from agno.agent import Agent
+from agno.exceptions import ModelRateLimitError
 from pydantic import BaseModel
 
 from doc_extractor import __version__
 from doc_extractor.exceptions import PydanticValidationError
 from doc_extractor.telemetry import record_extraction
+
+logger = logging.getLogger(__name__)
+
+# Story 8.5 — rate-limit retry. Outside the pipeline, wrapping the whole
+# per-key extract() at the batch level. The validation retry above is
+# inside the pipeline, wrapping the specialist agent call.
+RATE_LIMIT_DEFAULT_MAX_RETRIES = 3
+RATE_LIMIT_DEFAULT_BASE_DELAY = 1.0
+
+
+async def with_rate_limit_retry(
+    coro_factory: Callable[[], Awaitable[Any]],
+    *,
+    max_retries: int = RATE_LIMIT_DEFAULT_MAX_RETRIES,
+    base_delay: float = RATE_LIMIT_DEFAULT_BASE_DELAY,
+) -> Any:
+    """Retry on ``ModelRateLimitError`` with exponential backoff + jitter.
+
+    ``coro_factory`` produces a fresh coroutine each call — coroutines
+    cannot be re-awaited, so the caller must hand us a thunk that builds
+    a new awaitable per attempt. Backoff is
+    ``base_delay * (2 ** attempt) + random.uniform(0, base_delay)`` per
+    attempt; non-rate-limit errors propagate immediately, max-retries
+    re-raises the last ``ModelRateLimitError``.
+    """
+    if max_retries < 1:
+        raise ValueError(f"max_retries must be >= 1, got {max_retries}")
+
+    last_exc: ModelRateLimitError | None = None
+    for attempt in range(max_retries):
+        try:
+            return await coro_factory()
+        except ModelRateLimitError as exc:
+            last_exc = exc
+            if attempt == max_retries - 1:
+                break
+            delay = base_delay * (2**attempt) + random.uniform(0, base_delay)
+            logger.warning(
+                "rate-limit retry: attempt %d/%d failed (%s); sleeping %.2fs",
+                attempt + 1,
+                max_retries,
+                exc,
+                delay,
+            )
+            await asyncio.sleep(delay)
+
+    assert last_exc is not None  # loop must have caught at least one
+    raise last_exc
 
 # Per-provider model-tier escalation. v1 only the Anthropic Haiku→Sonnet
 # path is exercised in tests; the OpenAI entry is wired forward-compat for
