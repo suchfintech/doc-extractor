@@ -1,0 +1,16 @@
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T12:00:00Z'
+prompt_version: id_doc_base@0.1.0
+doc_type: ''
+doc_subtype: ''
+jurisdiction: HKG
+name_latin: CHAN TAI MAN
+name_cjk: 陳大文
+doc_number: K12345678
+dob: '1990-01-15'
+issue_date: '2020-06-01'
+expiry_date: '2030-05-31'
+place_of_birth: HONG KONG
+sex: M

@@ -1,0 +1,22 @@
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T12:00:00Z'
+prompt_version: visa@0.1.0
+doc_type: Visa
+doc_subtype: ''
+jurisdiction: NZ
+name_latin: CHAN TAI MAN
+name_cjk: ''
+doc_number: ABCD1234567
+dob: '1990-01-15'
+issue_date: '2024-03-01'
+expiry_date: '2027-02-28'
+place_of_birth: ''
+sex: M
+visa_class: Resident Visa
+issuing_country: NZ
+host_country: NZ
+valid_from: '2024-03-01'
+valid_to: '2027-02-28'
+entries_allowed: Multiple

@@ -1,0 +1,15 @@
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T12:00:00Z'
+prompt_version: tax_residency@0.1.0
+doc_type: TaxResidency
+doc_subtype: ''
+jurisdiction: NZ
+name_latin: ''
+name_cjk: ''
+holder_name: John Doe
+tax_jurisdiction: NZ
+tin: 123-456-789
+residency_status: resident
+effective_from: '2024-01-01'

@@ -1,0 +1,23 @@
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T19:00:00Z'
+prompt_version: 0.1.0
+doc_type: PaymentReceipt
+doc_subtype: ''
+jurisdiction: CN
+name_latin: ''
+name_cjk: ''
+receipt_amount: '15000.00'
+receipt_currency: CNY
+receipt_time: '2025-07-01T00:00:00Z'
+receipt_debit_account_name: 张三
+receipt_debit_account_number: 6217 **** **** 0083
+receipt_debit_bank_name: 中国工商银行
+receipt_credit_account_name: GM6040
+receipt_credit_account_number: 02-0248-0242329-02
+receipt_credit_bank_name: ANZ
+receipt_reference: INV-2025-001
+receipt_payment_app: 工商银行手机银行
+receipt_counterparty_name: ''
+receipt_counterparty_account: ''

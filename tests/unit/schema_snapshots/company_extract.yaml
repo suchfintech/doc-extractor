@@ -1,0 +1,21 @@
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T12:00:00Z'
+prompt_version: company_extract@0.1.0
+doc_type: CompanyExtract
+doc_subtype: ''
+jurisdiction: NZ
+name_latin: ''
+name_cjk: ''
+company_name: Acme Holdings Limited
+registration_number: '1234567'
+incorporation_date: '2018-04-15'
+registered_address: 123 Queen Street, Auckland 1010, New Zealand
+directors:
+- Alice Wong
+- Bob Chen
+- Charlie Smith
+shareholders:
+- Acme Group Ltd
+- Beta Capital

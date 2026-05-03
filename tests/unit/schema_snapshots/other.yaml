@@ -1,0 +1,13 @@
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T12:00:00Z'
+prompt_version: other@0.1.0
+doc_type: Other
+doc_subtype: ''
+jurisdiction: NZ
+name_latin: ''
+name_cjk: ''
+description: A handwritten document of unclear provenance
+extracted_text: 'Page 1 reads: ''Please forward to processing.'''
+notes: model uncertain — flagging for human review

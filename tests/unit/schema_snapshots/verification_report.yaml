@@ -1,0 +1,17 @@
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T12:00:00Z'
+prompt_version: verification_report@0.1.0
+doc_type: VerificationReport
+doc_subtype: ''
+jurisdiction: NZ
+name_latin: ''
+name_cjk: ''
+verifier_name: DIA
+verification_date: '2026-04-15'
+verification_method: electronic
+subject_name: Jane Smith
+subject_id_type: Passport
+subject_id_number: LA123456
+verification_outcome: verified

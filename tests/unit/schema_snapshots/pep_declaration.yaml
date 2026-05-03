@@ -1,0 +1,16 @@
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T12:00:00Z'
+prompt_version: pep_declaration@0.1.0
+doc_type: PEP_Declaration
+doc_subtype: ''
+jurisdiction: NZ
+name_latin: JOHN DOE
+name_cjk: ''
+is_pep: 'yes'
+pep_role: Member of Parliament
+pep_jurisdiction: NZ
+pep_relationship: self
+declaration_date: '2026-04-15'
+declarant_name: John Doe

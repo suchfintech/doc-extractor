@@ -1,0 +1,17 @@
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T12:00:00Z'
+prompt_version: bank_account_confirmation@0.1.0
+doc_type: BankAccountConfirmation
+doc_subtype: ''
+jurisdiction: NZ
+name_latin: ''
+name_cjk: ''
+bank_name: ANZ Bank New Zealand
+account_holder_name: Jane Smith
+account_number: 02-0248-0242329-02
+account_type: current
+currency: NZD
+confirmation_date: '2026-04-15'
+confirmation_authority: Sarah Chen, Branch Manager

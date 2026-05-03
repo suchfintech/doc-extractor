@@ -1,0 +1,6 @@
+field_audits:
+  receipt_debit_account_name: agree
+  receipt_credit_account_name: disagree
+  receipt_debit_account_number: abstain
+overall: fail
+notes: image shows credit name 王五 but specialist claimed 李四

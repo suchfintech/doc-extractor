@@ -1,0 +1,20 @@
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T12:00:00Z'
+prompt_version: driver_licence@0.1.0
+doc_type: DriverLicence
+doc_subtype: ''
+jurisdiction: NZL
+name_latin: JOHN DOE
+name_cjk: ''
+doc_number: EH123456
+dob: '1990-06-15'
+issue_date: '2020-06-01'
+expiry_date: '2030-05-31'
+place_of_birth: ''
+sex: M
+licence_class: Class 1
+licence_endorsements: ''
+licence_restrictions: ''
+address: 123 Queen Street Auckland 1010

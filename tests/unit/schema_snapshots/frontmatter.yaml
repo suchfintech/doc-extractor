@@ -1,0 +1,10 @@
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T12:00:00Z'
+prompt_version: frontmatter@0.1.0
+doc_type: ''
+doc_subtype: ''
+jurisdiction: OTHER
+name_latin: John Doe
+name_cjk: 约翰·杜

@@ -1,0 +1,15 @@
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T12:00:00Z'
+prompt_version: proof_of_address@0.1.0
+doc_type: ProofOfAddress
+doc_subtype: ''
+jurisdiction: NZ
+name_latin: ''
+name_cjk: ''
+holder_name: John Doe
+address: 123 Queen Street, Auckland 1010, New Zealand
+document_date: '2026-04-15'
+issuer: Mercury Energy
+document_type: utility bill
