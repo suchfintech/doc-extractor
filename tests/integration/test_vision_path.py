@@ -11,7 +11,7 @@ from agno.agent import Agent
 from doc_extractor import s3_io
 from doc_extractor.pipelines import vision_path
 from doc_extractor.schemas.classification import Classification
-from doc_extractor.schemas.ids import Passport
+from doc_extractor.schemas.ids import DriverLicence, NationalID, Passport, Visa
 from doc_extractor.schemas.payment_receipt import PaymentReceipt
 from doc_extractor.schemas.verifier import VerifierAudit
 
@@ -79,10 +79,15 @@ def patched_io(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
 async def test_happy_path_writes_passport_markdown(
     patched_io: dict[str, MagicMock], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Story 4.4 — Passport runs through the verifier-gated flow now, so
+    ``verifier_audit`` populates and the verifier mock is required."""
     classifier_agent, classifier_arun = _make_async_agent(
         Classification(doc_type="Passport", jurisdiction="NZ")
     )
     passport_agent, passport_arun = _make_async_agent(_passport_fixture())
+    verifier_agent, verifier_arun = _make_async_agent(
+        VerifierAudit(field_audits={"passport_number": "agree"}, notes="ok")
+    )
 
     monkeypatch.setattr(
         vision_path, "create_classifier_agent", lambda: classifier_agent
@@ -90,17 +95,21 @@ async def test_happy_path_writes_passport_markdown(
     monkeypatch.setattr(
         vision_path, "create_passport_agent", lambda: passport_agent
     )
+    monkeypatch.setattr(
+        vision_path, "create_verifier_agent", lambda: verifier_agent
+    )
 
     result = await vision_path.run(SOURCE_KEY)
 
-    assert result == {
-        "analysis_key": EXPECTED_ANALYSIS_KEY,
-        "skipped": False,
-        "doc_type": "Passport",
-        "verifier_audit": None,
-        "disagreement_key": None,
-        "retry_count": 0,
-    }
+    assert result["analysis_key"] == EXPECTED_ANALYSIS_KEY
+    assert result["skipped"] is False
+    assert result["doc_type"] == "Passport"
+    assert result["disagreement_key"] is None
+    assert result["retry_count"] == 0
+    # 4.4: Passport goes through the verifier — verdict 'pass' (validator pin).
+    assert isinstance(result["verifier_audit"], dict)
+    assert result["verifier_audit"]["overall"] == "pass"
+
     patched_io["head"].assert_called_once_with(EXPECTED_ANALYSIS_KEY)
     patched_io["presign"].assert_called_once()
     patched_io["write"].assert_called_once()
@@ -114,6 +123,7 @@ async def test_happy_path_writes_passport_markdown(
 
     assert classifier_arun.await_count == 1
     assert passport_arun.await_count == 1
+    assert verifier_arun.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -148,11 +158,15 @@ async def test_head_skip_short_circuits_before_provider(
 
 
 @pytest.mark.asyncio
-async def test_non_passport_classification_raises_not_implemented(
+async def test_unimplemented_doc_type_raises_not_implemented(
     patched_io: dict[str, MagicMock], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Story 4.4 closed the ID-document family, so ``DriverLicence`` now
+    routes to a real specialist. The remaining Epic-5 doc types (e.g.
+    ``BankStatement``) still raise ``NotImplementedError`` until their
+    specialists land."""
     classifier_agent, _ = _make_async_agent(
-        Classification(doc_type="DriverLicence", jurisdiction="NZ")
+        Classification(doc_type="BankStatement", jurisdiction="NZ")
     )
     passport_agent, passport_arun = _make_async_agent(content=None)
 
@@ -163,7 +177,7 @@ async def test_non_passport_classification_raises_not_implemented(
         vision_path, "create_passport_agent", lambda: passport_agent
     )
 
-    with pytest.raises(NotImplementedError, match="DriverLicence"):
+    with pytest.raises(NotImplementedError, match="BankStatement"):
         await vision_path.run(SOURCE_KEY)
 
     assert passport_arun.await_count == 0
@@ -192,11 +206,17 @@ async def test_pdf_source_routes_through_pdf_to_images(
         Classification(doc_type="Passport", jurisdiction="NZ")
     )
     passport_agent, _ = _make_async_agent(_passport_fixture())
+    verifier_agent, _ = _make_async_agent(
+        VerifierAudit(field_audits={"passport_number": "agree"})
+    )
     monkeypatch.setattr(
         vision_path, "create_classifier_agent", lambda: classifier_agent
     )
     monkeypatch.setattr(
         vision_path, "create_passport_agent", lambda: passport_agent
+    )
+    monkeypatch.setattr(
+        vision_path, "create_verifier_agent", lambda: verifier_agent
     )
 
     result = await vision_path.run(PDF_SOURCE_KEY)
@@ -317,12 +337,12 @@ async def test_verifier_fail_verdict_propagates_to_result_dict(
 
 
 @pytest.mark.asyncio
-async def test_verifier_skipped_when_classification_is_passport(
+async def test_verifier_runs_on_passport_classification(
     patched_io: dict[str, MagicMock], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Verifier gating: for non-PaymentReceipt types, the verifier agent is
-    never constructed and never called. Sentinel for Story 4.4 (which will
-    expand verification to ID types and need to update this test)."""
+    """Story 4.4: Passport joined the verifier-gated set. The verifier agent
+    is constructed, called once with the dumped Passport JSON + image, and
+    its audit lands in the result dict."""
     classifier_agent, _ = _make_async_agent(
         Classification(doc_type="Passport", jurisdiction="NZ")
     )
@@ -336,8 +356,15 @@ async def test_verifier_skipped_when_classification_is_passport(
     result = await vision_path.run(SOURCE_KEY)
 
     assert result["doc_type"] == "Passport"
-    assert result["verifier_audit"] is None
-    assert verifier_arun.await_count == 0
+    assert isinstance(result["verifier_audit"], dict)
+    assert result["verifier_audit"]["overall"] == "pass"
+    assert verifier_arun.await_count == 1
+    # Verifier saw the Passport instance dumped to JSON plus the image.
+    verifier_input = verifier_arun.call_args.args[0]
+    assert isinstance(verifier_input, str)
+    assert "passport_number" in verifier_input
+    assert "E12345678" in verifier_input
+    assert verifier_arun.call_args.kwargs["images"]
 
 
 @pytest.mark.asyncio
@@ -458,19 +485,23 @@ async def test_disagreement_NOT_written_when_verifier_overall_is_uncertain(
 
 
 @pytest.mark.asyncio
-async def test_disagreement_NOT_written_for_passport_route(
+async def test_disagreement_NOT_written_for_passport_when_verifier_passes(
     patched_io: dict[str, MagicMock],
     captured_disagreement_calls: list[dict[str, Any]],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No verifier runs on Passport, so no disagreement write is possible."""
+    """Story 4.4: Passport now runs the verifier. With a passing verdict,
+    no disagreement is written — the gate is on overall=='fail', not on
+    the specialist type."""
     classifier_agent, _ = _make_async_agent(
         Classification(doc_type="Passport", jurisdiction="NZ")
     )
     passport_agent, _ = _make_async_agent(_passport_fixture())
+    verifier_agent, _ = _make_async_agent(_verifier_audit_fixture("pass"))
 
     monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
     monkeypatch.setattr(vision_path, "create_passport_agent", lambda: passport_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
 
     result = await vision_path.run(SOURCE_KEY)
 
@@ -575,3 +606,153 @@ async def test_retry_count_propagates_to_result_dict(
     assert result["doc_type"] == "PaymentReceipt"
     # No disagreement on a successful (post-retry) run with verifier=pass.
     assert captured_disagreement_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Story 4.4 — verifier gates on the four ID document types
+# ---------------------------------------------------------------------------
+
+
+def _driver_licence_fixture() -> DriverLicence:
+    return DriverLicence(
+        doc_type="DriverLicence",
+        jurisdiction="NZL",
+        name_latin="DOE, JANE",
+        doc_number="DL12345678",
+        dob="1992-03-21",
+        issue_date="2020-03-21",
+        expiry_date="2030-03-20",
+        sex="F",
+        licence_class="6",
+    )
+
+
+def _national_id_fixture() -> NationalID:
+    return NationalID(
+        doc_type="NationalID",
+        jurisdiction="CN",
+        name_cjk="李明",
+        doc_number="11010519491231002X",
+        dob="1949-12-31",
+        sex="M",
+    )
+
+
+def _visa_fixture() -> Visa:
+    return Visa(
+        doc_type="Visa",
+        jurisdiction="NZL",
+        name_latin="WANG, WEI",
+        doc_number="V987654",
+        issue_date="2025-01-10",
+        expiry_date="2026-01-09",
+        visa_class="L",
+    )
+
+
+@pytest.mark.asyncio
+async def test_verifier_runs_on_driver_licence_classification(
+    patched_io: dict[str, MagicMock], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    classifier_agent, _ = _make_async_agent(
+        Classification(doc_type="DriverLicence", jurisdiction="NZ")
+    )
+    dl = _driver_licence_fixture()
+    dl_agent, dl_arun = _make_async_agent(dl)
+    verifier_agent, verifier_arun = _make_async_agent(_verifier_audit_fixture("pass"))
+
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_driver_licence_agent", lambda: dl_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+
+    result = await vision_path.run(SOURCE_KEY)
+
+    assert result["doc_type"] == "DriverLicence"
+    assert result["verifier_audit"]["overall"] == "pass"
+    assert dl_arun.await_count == 1
+    assert verifier_arun.await_count == 1
+    verifier_input = verifier_arun.call_args.args[0]
+    assert "doc_number" in verifier_input
+    assert "DL12345678" in verifier_input
+    assert "licence_class" in verifier_input
+
+
+@pytest.mark.asyncio
+async def test_verifier_runs_on_national_id_classification(
+    patched_io: dict[str, MagicMock], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    classifier_agent, _ = _make_async_agent(
+        Classification(doc_type="NationalID", jurisdiction="CN")
+    )
+    nid = _national_id_fixture()
+    nid_agent, nid_arun = _make_async_agent(nid)
+    verifier_agent, verifier_arun = _make_async_agent(_verifier_audit_fixture("pass"))
+
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_national_id_agent", lambda: nid_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+
+    result = await vision_path.run(SOURCE_KEY)
+
+    assert result["doc_type"] == "NationalID"
+    assert result["verifier_audit"]["overall"] == "pass"
+    assert nid_arun.await_count == 1
+    assert verifier_arun.await_count == 1
+    verifier_input = verifier_arun.call_args.args[0]
+    assert "11010519491231002X" in verifier_input
+    # CJK name preserved through json.dumps(ensure_ascii=False).
+    assert "李明" in verifier_input
+
+
+@pytest.mark.asyncio
+async def test_verifier_runs_on_visa_classification(
+    patched_io: dict[str, MagicMock], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    classifier_agent, _ = _make_async_agent(
+        Classification(doc_type="Visa", jurisdiction="NZ")
+    )
+    visa = _visa_fixture()
+    visa_agent, visa_arun = _make_async_agent(visa)
+    verifier_agent, verifier_arun = _make_async_agent(_verifier_audit_fixture("pass"))
+
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_visa_agent", lambda: visa_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+
+    result = await vision_path.run(SOURCE_KEY)
+
+    assert result["doc_type"] == "Visa"
+    assert result["verifier_audit"]["overall"] == "pass"
+    assert visa_arun.await_count == 1
+    assert verifier_arun.await_count == 1
+    verifier_input = verifier_arun.call_args.args[0]
+    assert "V987654" in verifier_input
+    assert "visa_class" in verifier_input
+
+
+@pytest.mark.asyncio
+async def test_verifier_failure_on_driver_licence_writes_disagreement(
+    patched_io: dict[str, MagicMock],
+    captured_disagreement_calls: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cross-type sentinel: the disagreement-write trigger generalises beyond
+    PaymentReceipt — a failing verifier on any gated type writes the queue
+    entry. Sentinel for Story 6.1's expansion to multi-type forensics."""
+    classifier_agent, _ = _make_async_agent(
+        Classification(doc_type="DriverLicence", jurisdiction="NZ")
+    )
+    dl_agent, _ = _make_async_agent(_driver_licence_fixture())
+    verifier_agent, _ = _make_async_agent(_verifier_audit_fixture("fail"))
+
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_driver_licence_agent", lambda: dl_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+
+    result = await vision_path.run(SOURCE_KEY)
+
+    assert len(captured_disagreement_calls) == 1
+    call = captured_disagreement_calls[0]
+    assert isinstance(call["primary"], DriverLicence)
+    assert call["status"] == "disagreement"
+    assert result["disagreement_key"] is not None

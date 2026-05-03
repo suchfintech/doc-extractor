@@ -1,10 +1,11 @@
 """Vision pipeline.
 
 Wires together: HEAD-skip → MIME-detect → (PDF→PNG | presign) → classify →
-route → extract → (verify if PaymentReceipt) → render → write. Story 3.7
-added the verifier step on the PaymentReceipt branch; Story 4.4 expands
-verification to the ID-document family. Other doc-types still surface
-``NotImplementedError`` until their specialists land.
+route → extract → verify (per FR4 list) → render → write. Story 3.7 wired
+the verifier on PaymentReceipt; Story 4.4 expanded the gating set to all
+five safety-critical types (the four ID documents plus PaymentReceipt).
+Doc-types outside the gated set still surface ``NotImplementedError``
+until their specialists land in Epic 5.
 
 Story 3.3 added the MIME pre-step: before classifier dispatch, ``head_source``
 returns the object's content type. PDFs are downloaded and rendered to PNG
@@ -16,6 +17,7 @@ in Epic 5). Native images keep the presigned-URL fast path.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 from agno.agent import Agent
@@ -23,10 +25,13 @@ from agno.media import Image
 
 from doc_extractor import __version__, markdown_io, s3_io
 from doc_extractor.agents.classifier import create_classifier_agent
+from doc_extractor.agents.driver_licence import create_driver_licence_agent
+from doc_extractor.agents.national_id import create_national_id_agent
 from doc_extractor.agents.passport import create_passport_agent
 from doc_extractor.agents.payment_receipt import create_payment_receipt_agent
 from doc_extractor.agents.retry import with_validation_retry
 from doc_extractor.agents.verifier import create_verifier_agent
+from doc_extractor.agents.visa import create_visa_agent
 from doc_extractor.config.precedence import resolve_agent_config
 from doc_extractor.disagreement import record_disagreement
 from doc_extractor.exceptions import PydanticValidationError
@@ -34,16 +39,82 @@ from doc_extractor.pdf.converter import PdfMode, pdf_to_images
 from doc_extractor.prompts.loader import load_prompt
 from doc_extractor.schemas.base import Frontmatter
 from doc_extractor.schemas.classification import Classification
-from doc_extractor.schemas.ids import Passport
+from doc_extractor.schemas.ids import DriverLicence, NationalID, Passport, Visa
 from doc_extractor.schemas.payment_receipt import PaymentReceipt
 from doc_extractor.schemas.verifier import VerifierAudit
 
 CLASSIFIER_INPUT = "Classify this document image."
-PASSPORT_INPUT = "Extract the passport fields from this image."
-PAYMENT_RECEIPT_INPUT = "Extract the payment receipt fields from this image."
 
 PDF_CONTENT_TYPE = "application/pdf"
 PDF_KEY_SUFFIX = ".pdf"
+
+
+# Story 4.4 — five safety-critical doc types share the same wrapping:
+# retry-with-escalation specialist call, post-extraction verifier audit,
+# and disagreement-queue routing on fail / validation_failure. The CEL
+# DSL the architecture sketches is informational only; production uses
+# this Python-level dispatch table because it's easier to mypy / unit-test
+# and adding a sixth type is one row, not a CEL grammar change.
+class _SpecialistSpec:
+    """Static config for one verifier-gated specialist."""
+
+    __slots__ = ("agent_name", "factory", "input_text", "schema_cls")
+
+    def __init__(
+        self,
+        *,
+        agent_name: str,
+        factory: Callable[[], Agent],
+        input_text: str,
+        schema_cls: type[Frontmatter],
+    ) -> None:
+        self.agent_name = agent_name
+        self.factory = factory
+        self.input_text = input_text
+        self.schema_cls = schema_cls
+
+
+# NOTE: each ``factory`` is wrapped in a lambda (rather than a direct
+# reference to ``create_*_agent``) so the call-site goes through this
+# module's globals at *call* time, honouring tests' ``monkeypatch.setattr(
+# vision_path, "create_X_agent", ...)`` overrides. A direct function
+# reference would be captured at import time and bypass the patch.
+_SPECIALISTS: dict[str, _SpecialistSpec] = {
+    "Passport": _SpecialistSpec(
+        agent_name="passport",
+        factory=lambda: create_passport_agent(),
+        input_text="Extract the passport fields from this image.",
+        schema_cls=Passport,
+    ),
+    "DriverLicence": _SpecialistSpec(
+        agent_name="driver_licence",
+        factory=lambda: create_driver_licence_agent(),
+        input_text="Extract the driver licence fields from this image.",
+        schema_cls=DriverLicence,
+    ),
+    "NationalID": _SpecialistSpec(
+        agent_name="national_id",
+        factory=lambda: create_national_id_agent(),
+        input_text="Extract the national ID fields from this image.",
+        schema_cls=NationalID,
+    ),
+    "Visa": _SpecialistSpec(
+        agent_name="visa",
+        factory=lambda: create_visa_agent(),
+        input_text="Extract the visa fields from this image.",
+        schema_cls=Visa,
+    ),
+    "PaymentReceipt": _SpecialistSpec(
+        agent_name="payment_receipt",
+        factory=lambda: create_payment_receipt_agent(),
+        input_text="Extract the payment receipt fields from this image.",
+        schema_cls=PaymentReceipt,
+    ),
+}
+
+# Re-exported for backwards-compat with callers that imported these constants.
+PASSPORT_INPUT = _SPECIALISTS["Passport"].input_text
+PAYMENT_RECEIPT_INPUT = _SPECIALISTS["PaymentReceipt"].input_text
 
 
 def _analysis_key_for(source_key: str) -> str:
@@ -117,10 +188,11 @@ async def run(source_key: str) -> dict[str, Any]:
     """Process a single source document end-to-end.
 
     Returns a result dict with ``analysis_key``, ``skipped`` (HEAD-skip
-    flag), ``doc_type``, and ``verifier_audit`` (the dumped
-    :class:`VerifierAudit` for PaymentReceipt-typed runs, ``None`` otherwise
-    — including HEAD-skip and Passport runs). Story 3.9 will consume the
-    audit when writing disagreement-queue entries.
+    flag), ``doc_type``, ``verifier_audit`` (dumped :class:`VerifierAudit`
+    for any of the five verifier-gated doc types, ``None`` otherwise),
+    ``disagreement_key`` (set when the verifier returned ``fail`` or the
+    retry exhausted), and ``retry_count`` (0 on first-attempt success,
+    1 on escalated retry success).
     """
     analysis_key = _analysis_key_for(source_key)
 
@@ -144,87 +216,74 @@ async def run(source_key: str) -> dict[str, Any]:
             f"Classifier returned {type(classification).__name__}, expected Classification"
         )
 
-    extracted: Passport | PaymentReceipt
-    verifier_audit: VerifierAudit | None = None
-    retry_count: int = 0
-
-    if classification.doc_type == "Passport":
-        passport_agent = create_passport_agent()
-        extraction_result = await passport_agent.arun(PASSPORT_INPUT, images=[image])
-        passport = extraction_result.content
-        if not isinstance(passport, Passport):
-            raise TypeError(
-                f"Passport agent returned {type(passport).__name__}, expected Passport"
-            )
-        _populate_pipeline_provenance(passport, agent_name="passport")
-        extracted = passport
-
-    elif classification.doc_type == "PaymentReceipt":
-        # Story 3.8 — wrap the specialist call in with_validation_retry so a
-        # PydanticValidationError on the first attempt triggers one retry on
-        # an escalated tier. Specialists default to Sonnet (top-tier), so in
-        # production today the retry path won't escalate; the wrapping is
-        # forward-compat and exercises the validation_failure → disagreement
-        # queue branch.
-        def _pr_factory(_tier: str) -> Agent:
-            return create_payment_receipt_agent()
-
-        try:
-            content, retry_count = await with_validation_retry(
-                _pr_factory,
-                PAYMENT_RECEIPT_INPUT,
-                agent_name="payment_receipt",
-                source_key=source_key,
-                primary_provider="anthropic-sonnet",
-                arun_kwargs={"images": [image]},
-                doc_type="PaymentReceipt",
-            )
-        except PydanticValidationError:
-            # No more retries possible — route to disagreement queue and
-            # propagate so the caller surfaces the failure.
-            record_disagreement(
-                source_key=source_key,
-                primary=None,
-                verifier=None,
-                status="validation_failure",
-                extractor_version=__version__,
-            )
-            raise
-
-        if not isinstance(content, PaymentReceipt):
-            raise TypeError(
-                f"PaymentReceipt retry returned {type(content).__name__},"
-                f" expected PaymentReceipt"
-            )
-        _populate_pipeline_provenance(content, agent_name="payment_receipt")
-        extracted = content
-
-        # Story 3.7 — verifier audit on PaymentReceipt. Story 4.4 expands
-        # this to the ID-document family.
-        verifier_input = json.dumps(content.model_dump(), ensure_ascii=False, indent=2)
-        verifier_agent = create_verifier_agent()
-        verifier_result = await verifier_agent.arun(verifier_input, images=[image])
-        audit = verifier_result.content
-        if not isinstance(audit, VerifierAudit):
-            raise TypeError(
-                f"Verifier agent returned {type(audit).__name__}, expected VerifierAudit"
-            )
-        verifier_audit = audit
-
-    else:
+    spec = _SPECIALISTS.get(classification.doc_type)
+    if spec is None:
         raise NotImplementedError(
             f"specialist not yet implemented for doc_type={classification.doc_type!r}"
         )
+
+    # Story 3.8 — wrap the specialist call in with_validation_retry. Story
+    # 4.4 generalised this from PaymentReceipt to all five verifier-gated
+    # types. Specialists default to Sonnet (top-tier) per agents.yaml, so
+    # the escalation path is dormant in production today; the wrapping is
+    # forward-compat and exercises the validation_failure → disagreement
+    # queue branch uniformly across types.
+    def _retry_factory(_tier: str) -> Agent:
+        return spec.factory()
+
+    try:
+        content, retry_count = await with_validation_retry(
+            _retry_factory,
+            spec.input_text,
+            agent_name=spec.agent_name,
+            source_key=source_key,
+            primary_provider="anthropic-sonnet",
+            arun_kwargs={"images": [image]},
+            doc_type=classification.doc_type,
+        )
+    except PydanticValidationError:
+        # No more retries possible — route to disagreement queue and
+        # propagate so the caller surfaces the failure.
+        record_disagreement(
+            source_key=source_key,
+            primary=None,
+            verifier=None,
+            status="validation_failure",
+            extractor_version=__version__,
+        )
+        raise
+
+    if not isinstance(content, spec.schema_cls):
+        raise TypeError(
+            f"{spec.agent_name} retry returned {type(content).__name__},"
+            f" expected {spec.schema_cls.__name__}"
+        )
+    _populate_pipeline_provenance(content, agent_name=spec.agent_name)
+    extracted: Frontmatter = content
+
+    # Story 3.7 (PaymentReceipt) → 4.4 (all five): verifier audit runs on
+    # every gated specialist using a single audit prompt. The verifier
+    # receives the typed instance dump as JSON so prompt-level diversity
+    # catches a different class of error than re-running the extraction
+    # prompt would (architecture Decision 1).
+    verifier_input = json.dumps(content.model_dump(), ensure_ascii=False, indent=2)
+    verifier_agent = create_verifier_agent()
+    verifier_result = await verifier_agent.arun(verifier_input, images=[image])
+    audit = verifier_result.content
+    if not isinstance(audit, VerifierAudit):
+        raise TypeError(
+            f"Verifier agent returned {type(audit).__name__}, expected VerifierAudit"
+        )
+    verifier_audit: VerifierAudit = audit
 
     md_text = markdown_io.render_to_md(extracted)
     s3_io.write_analysis(analysis_key, md_text)
 
     # Story 3.9 — write a disagreement-queue entry when the verifier flagged
     # ≥1 field as `disagree` (overall=="fail"). `uncertain` is NOT written:
-    # downstream surfaces it as advisory only. Non-PaymentReceipt runs have
-    # no verifier and therefore never produce a disagreement entry.
+    # downstream surfaces it as advisory only.
     disagreement_key: str | None = None
-    if verifier_audit is not None and verifier_audit.overall == "fail":
+    if verifier_audit.overall == "fail":
         disagreement_key = record_disagreement(
             source_key=source_key,
             primary=extracted,
@@ -237,7 +296,7 @@ async def run(source_key: str) -> dict[str, Any]:
         "analysis_key": analysis_key,
         "skipped": False,
         "doc_type": classification.doc_type,
-        "verifier_audit": verifier_audit.model_dump() if verifier_audit else None,
+        "verifier_audit": verifier_audit.model_dump(),
         "disagreement_key": disagreement_key,
         "retry_count": retry_count,
     }
