@@ -43,6 +43,14 @@
     "body_sha256": "4455ee7b8391bb412ccaba4d716ae70253b25f9974e2247a85dc5a937a4ceaa5",
     "version": "0.1.0"
   },
+  "proof_of_address.md": {
+    "body_sha256": "4cfab70a59f67bc5892c34ec59b3854cb2622bb83550a8b59946862aa2393a23",
+    "version": "0.1.0"
+  },
+  "tax_residency.md": {
+    "body_sha256": "fb88ac7b077f6ecf9625dda5a101e33d5fce50a958397bd605f72d6236fbb637",
+    "version": "0.1.0"
+  },
   "verification_report.md": {
     "body_sha256": "cdb12a48246e67d3e96d45f8c876cc1de3020edc8dbcf248c29ccd8929d3b506",
     "version": "0.1.0"

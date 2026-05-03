@@ -87,3 +87,14 @@ company_extract:
 entity_ownership:
   provider: anthropic
   model: claude-sonnet-4-6-20260101
+
+# Epic 5 person-related documents — Sonnet for the issuer-priority discipline
+# (POA: government > utility > bank > other) and the verbatim-TIN preservation
+# across NZ IRD / US SSN / HK / SG / CN USCC formats.
+proof_of_address:
+  provider: anthropic
+  model: claude-sonnet-4-6-20260101
+
+tax_residency:
+  provider: anthropic
+  model: claude-sonnet-4-6-20260101

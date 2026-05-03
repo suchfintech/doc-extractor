@@ -23,6 +23,8 @@ from doc_extractor.schemas import (
     Passport,
     PaymentReceipt,
     PEP_Declaration,
+    ProofOfAddress,
+    TaxResidency,
     UltimateBeneficialOwner,
     VerificationReport,
     Visa,
@@ -1074,3 +1076,133 @@ def test_entity_ownership_preserves_ownership_percentage_verbatim() -> None:
     assert "ownership_percentage: '0.25'" in dumped
     assert "ownership_percentage: approximately 25%" in dumped
     assert "ownership_percentage: 25.5%" in dumped
+
+
+# --------------------------------------------------------------------------
+# Story 5.4 — Epic 5 person-related documents
+# --------------------------------------------------------------------------
+
+# ProofOfAddress — NZ utility bill. The address has commas but renders plain
+# in block scalar context (PyYAML doesn't need to quote).
+CANONICAL_PROOF_OF_ADDRESS = ProofOfAddress(
+    extractor_version="0.1.0",
+    extraction_provider="anthropic",
+    extraction_model="claude-sonnet-4-6-20260101",
+    extraction_timestamp="2026-05-03T12:00:00Z",
+    prompt_version="proof_of_address@0.1.0",
+    doc_type="ProofOfAddress",
+    doc_subtype="",
+    jurisdiction="NZ",
+    name_latin="",
+    name_cjk="",
+    holder_name="John Doe",
+    address="123 Queen Street, Auckland 1010, New Zealand",
+    document_date="2026-04-15",
+    issuer="Mercury Energy",
+    document_type="utility bill",
+)
+
+EXPECTED_PROOF_OF_ADDRESS_YAML = """\
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T12:00:00Z'
+prompt_version: proof_of_address@0.1.0
+doc_type: ProofOfAddress
+doc_subtype: ''
+jurisdiction: NZ
+name_latin: ''
+name_cjk: ''
+holder_name: John Doe
+address: 123 Queen Street, Auckland 1010, New Zealand
+document_date: '2026-04-15'
+issuer: Mercury Energy
+document_type: utility bill
+"""
+
+
+def _dump_poa(p: ProofOfAddress) -> str:
+    return yaml.safe_dump(p.model_dump(), allow_unicode=True, sort_keys=False)
+
+
+def test_canonical_proof_of_address_yaml_is_byte_stable() -> None:
+    assert _dump_poa(CANONICAL_PROOF_OF_ADDRESS) == EXPECTED_PROOF_OF_ADDRESS_YAML
+
+
+def test_canonical_proof_of_address_dump_is_idempotent() -> None:
+    assert _dump_poa(CANONICAL_PROOF_OF_ADDRESS) == _dump_poa(CANONICAL_PROOF_OF_ADDRESS)
+
+
+# TaxResidency — NZ IRD residency-status letter. The 9-digit IRD number is
+# captured with hyphens verbatim. PyYAML keeps it unquoted because the hyphens
+# prevent int-coercion (unlike the all-digit CN id_card_number which DOES get
+# quoted in the NationalID snapshot above).
+CANONICAL_TAX_RESIDENCY = TaxResidency(
+    extractor_version="0.1.0",
+    extraction_provider="anthropic",
+    extraction_model="claude-sonnet-4-6-20260101",
+    extraction_timestamp="2026-05-03T12:00:00Z",
+    prompt_version="tax_residency@0.1.0",
+    doc_type="TaxResidency",
+    doc_subtype="",
+    jurisdiction="NZ",
+    name_latin="",
+    name_cjk="",
+    holder_name="John Doe",
+    tax_jurisdiction="NZ",
+    tin="123-456-789",
+    residency_status="resident",
+    effective_from="2024-01-01",
+)
+
+EXPECTED_TAX_RESIDENCY_YAML = """\
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T12:00:00Z'
+prompt_version: tax_residency@0.1.0
+doc_type: TaxResidency
+doc_subtype: ''
+jurisdiction: NZ
+name_latin: ''
+name_cjk: ''
+holder_name: John Doe
+tax_jurisdiction: NZ
+tin: 123-456-789
+residency_status: resident
+effective_from: '2024-01-01'
+"""
+
+
+def _dump_tr(t: TaxResidency) -> str:
+    return yaml.safe_dump(t.model_dump(), allow_unicode=True, sort_keys=False)
+
+
+def test_canonical_tax_residency_yaml_is_byte_stable() -> None:
+    assert _dump_tr(CANONICAL_TAX_RESIDENCY) == EXPECTED_TAX_RESIDENCY_YAML
+
+
+def test_tax_residency_preserves_tin_formats_verbatim() -> None:
+    """Each jurisdiction's TIN format round-trips byte-for-byte. Important:
+    parentheses (HK), hyphens (NZ/US), and the all-digit USCC (CN entity)
+    each have different PyYAML quoting interactions."""
+    formats = {
+        "NZ": "123-456-789",
+        "US": "123-45-6789",
+        "HK": "A123456(7)",
+        "SG": "S1234567A",
+        "CN": "91110000XXXXXXXXXX",
+    }
+    for jur, tin in formats.items():
+        t = TaxResidency(
+            extractor_version="0.1.0",
+            extraction_provider="anthropic",
+            extraction_model="claude-sonnet-4-6-20260101",
+            extraction_timestamp="2026-05-03T12:00:00Z",
+            prompt_version="tax_residency@0.1.0",
+            doc_type="TaxResidency",
+            tax_jurisdiction=jur,
+            tin=tin,
+        )
+        dumped = _dump_tr(t)
+        assert tin in dumped, f"TIN {tin!r} ({jur}) lost during YAML dump"

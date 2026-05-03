@@ -52,6 +52,8 @@ from doc_extractor.agents.national_id import create_national_id_agent
 from doc_extractor.agents.passport import create_passport_agent
 from doc_extractor.agents.payment_receipt import create_payment_receipt_agent
 from doc_extractor.agents.pep_declaration import create_pep_declaration_agent
+from doc_extractor.agents.proof_of_address import create_proof_of_address_agent
+from doc_extractor.agents.tax_residency import create_tax_residency_agent
 from doc_extractor.agents.verification_report import create_verification_report_agent
 from doc_extractor.agents.visa import create_visa_agent
 
@@ -93,9 +95,9 @@ FACTORIES: dict[str, AgentFactory] = {
     # specialist to emit a nested-object schema (UltimateBeneficialOwner).
     "CompanyExtract": create_company_extract_agent,
     "EntityOwnership": create_entity_ownership_agent,
-    # Epic 5 — placeholders (replace with real factories as each ships):
-    "ProofOfAddress": _other_placeholder,
-    "TaxResidency": _other_placeholder,
+    # Epic 5 — person-related documents (Story 5.4).
+    "ProofOfAddress": create_proof_of_address_agent,
+    "TaxResidency": create_tax_residency_agent,
     # Catch-all — Story 5.5 wires this to the real Other agent
     "Other": _other_placeholder,
 }

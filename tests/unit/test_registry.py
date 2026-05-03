@@ -31,6 +31,8 @@ from doc_extractor.schemas.entity_ownership import EntityOwnership
 from doc_extractor.schemas.ids import DriverLicence, NationalID, Passport, Visa
 from doc_extractor.schemas.payment_receipt import PaymentReceipt
 from doc_extractor.schemas.pep_declaration import PEP_Declaration
+from doc_extractor.schemas.proof_of_address import ProofOfAddress
+from doc_extractor.schemas.tax_residency import TaxResidency
 from doc_extractor.schemas.verification_report import VerificationReport
 
 REAL_FACTORIES: dict[str, type] = {
@@ -49,13 +51,15 @@ REAL_FACTORIES: dict[str, type] = {
     # Story 5.3 — Epic 5 entity documents promoted from _other_placeholder
     "CompanyExtract": CompanyExtract,
     "EntityOwnership": EntityOwnership,
+    # Story 5.4 — Epic 5 person-related documents promoted from _other_placeholder
+    "ProofOfAddress": ProofOfAddress,
+    "TaxResidency": TaxResidency,
 }
 
-PLACEHOLDER_DOC_TYPES = (
-    "ProofOfAddress",
-    "TaxResidency",
-    "Other",
-)
+# After Story 5.4 only `Other` remains — Story 5.5 will replace it with the
+# real catch-all and PLACEHOLDER_DOC_TYPES will become an empty tuple
+# (parametrized tests over an empty list are valid no-ops).
+PLACEHOLDER_DOC_TYPES = ("Other",)
 
 
 @pytest.fixture(autouse=True)
@@ -86,6 +90,8 @@ def mocked_factory_deps(monkeypatch: pytest.MonkeyPatch) -> None:
         passport,
         payment_receipt,
         pep_declaration,
+        proof_of_address,
+        tax_residency,
         verification_report,
         visa,
     )
@@ -108,6 +114,8 @@ def mocked_factory_deps(monkeypatch: pytest.MonkeyPatch) -> None:
         bank_account_confirmation,
         company_extract,
         entity_ownership,
+        proof_of_address,
+        tax_residency,
     ):
         create_mock = MagicMock(side_effect=_make_model)
         validate_mock = MagicMock(return_value="test-api-key")
