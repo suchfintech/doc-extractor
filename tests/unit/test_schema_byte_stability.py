@@ -12,7 +12,16 @@ from datetime import date
 
 import yaml
 
-from doc_extractor.schemas import DriverLicence, NationalID, Passport, PaymentReceipt, Visa
+from doc_extractor.schemas import (
+    ApplicationForm,
+    DriverLicence,
+    NationalID,
+    Passport,
+    PaymentReceipt,
+    PEP_Declaration,
+    VerificationReport,
+    Visa,
+)
 
 CANONICAL_PASSPORT = Passport(
     extractor_version="0.1.0",
@@ -530,6 +539,163 @@ def test_canonical_visa_yaml_is_byte_stable() -> None:
 
 def test_canonical_visa_dump_is_idempotent() -> None:
     assert _dump_visa(CANONICAL_VISA) == _dump_visa(CANONICAL_VISA)
+
+
+# --------------------------------------------------------------------------
+# Story 5.1 — Epic 5 compliance specialists
+# --------------------------------------------------------------------------
+
+# PEP_Declaration — `is_pep: yes` round-trips quoted because PyYAML treats
+# bare `yes`/`no`/`on`/`off` as YAML 1.1 booleans even under safe_dump; the
+# snapshot pins that quoting so a future loader change can't silently flip
+# the value to True.
+CANONICAL_PEP_DECLARATION = PEP_Declaration(
+    extractor_version="0.1.0",
+    extraction_provider="anthropic",
+    extraction_model="claude-sonnet-4-6-20260101",
+    extraction_timestamp="2026-05-03T12:00:00Z",
+    prompt_version="pep_declaration@0.1.0",
+    doc_type="PEP_Declaration",
+    doc_subtype="",
+    jurisdiction="NZ",
+    name_latin="JOHN DOE",
+    name_cjk="",
+    is_pep="yes",
+    pep_role="Member of Parliament",
+    pep_jurisdiction="NZ",
+    pep_relationship="self",
+    declaration_date="2026-04-15",
+    declarant_name="John Doe",
+)
+
+EXPECTED_PEP_YAML = """\
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T12:00:00Z'
+prompt_version: pep_declaration@0.1.0
+doc_type: PEP_Declaration
+doc_subtype: ''
+jurisdiction: NZ
+name_latin: JOHN DOE
+name_cjk: ''
+is_pep: 'yes'
+pep_role: Member of Parliament
+pep_jurisdiction: NZ
+pep_relationship: self
+declaration_date: '2026-04-15'
+declarant_name: John Doe
+"""
+
+
+def _dump_pep(p: PEP_Declaration) -> str:
+    return yaml.safe_dump(p.model_dump(), allow_unicode=True, sort_keys=False)
+
+
+def test_canonical_pep_declaration_yaml_is_byte_stable() -> None:
+    assert _dump_pep(CANONICAL_PEP_DECLARATION) == EXPECTED_PEP_YAML
+
+
+def test_canonical_pep_declaration_dump_is_idempotent() -> None:
+    assert _dump_pep(CANONICAL_PEP_DECLARATION) == _dump_pep(CANONICAL_PEP_DECLARATION)
+
+
+# VerificationReport — NZ EIV report, electronic verification.
+CANONICAL_VERIFICATION_REPORT = VerificationReport(
+    extractor_version="0.1.0",
+    extraction_provider="anthropic",
+    extraction_model="claude-sonnet-4-6-20260101",
+    extraction_timestamp="2026-05-03T12:00:00Z",
+    prompt_version="verification_report@0.1.0",
+    doc_type="VerificationReport",
+    doc_subtype="",
+    jurisdiction="NZ",
+    name_latin="",
+    name_cjk="",
+    verifier_name="DIA",
+    verification_date="2026-04-15",
+    verification_method="electronic",
+    subject_name="Jane Smith",
+    subject_id_type="Passport",
+    subject_id_number="LA123456",
+    verification_outcome="verified",
+)
+
+EXPECTED_VERIFICATION_REPORT_YAML = """\
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T12:00:00Z'
+prompt_version: verification_report@0.1.0
+doc_type: VerificationReport
+doc_subtype: ''
+jurisdiction: NZ
+name_latin: ''
+name_cjk: ''
+verifier_name: DIA
+verification_date: '2026-04-15'
+verification_method: electronic
+subject_name: Jane Smith
+subject_id_type: Passport
+subject_id_number: LA123456
+verification_outcome: verified
+"""
+
+
+def _dump_vr(v: VerificationReport) -> str:
+    return yaml.safe_dump(v.model_dump(), allow_unicode=True, sort_keys=False)
+
+
+def test_canonical_verification_report_yaml_is_byte_stable() -> None:
+    assert _dump_vr(CANONICAL_VERIFICATION_REPORT) == EXPECTED_VERIFICATION_REPORT_YAML
+
+
+# ApplicationForm — generic LEL onboarding shape.
+CANONICAL_APPLICATION_FORM = ApplicationForm(
+    extractor_version="0.1.0",
+    extraction_provider="anthropic",
+    extraction_model="claude-sonnet-4-6-20260101",
+    extraction_timestamp="2026-05-03T12:00:00Z",
+    prompt_version="application_form@0.1.0",
+    doc_type="ApplicationForm",
+    doc_subtype="",
+    jurisdiction="NZ",
+    name_latin="",
+    name_cjk="",
+    application_date="2026-04-15",
+    applicant_name="Alice Wong",
+    applicant_dob="1990-06-15",
+    application_type="remittance customer onboarding",
+    applicant_address="123 Queen Street Auckland 1010",
+    applicant_occupation="Software Engineer",
+)
+
+EXPECTED_APPLICATION_FORM_YAML = """\
+extractor_version: 0.1.0
+extraction_provider: anthropic
+extraction_model: claude-sonnet-4-6-20260101
+extraction_timestamp: '2026-05-03T12:00:00Z'
+prompt_version: application_form@0.1.0
+doc_type: ApplicationForm
+doc_subtype: ''
+jurisdiction: NZ
+name_latin: ''
+name_cjk: ''
+application_date: '2026-04-15'
+applicant_name: Alice Wong
+applicant_dob: '1990-06-15'
+application_type: remittance customer onboarding
+applicant_address: 123 Queen Street Auckland 1010
+applicant_occupation: Software Engineer
+"""
+
+
+def _dump_af(a: ApplicationForm) -> str:
+    return yaml.safe_dump(a.model_dump(), allow_unicode=True, sort_keys=False)
+
+
+def test_canonical_application_form_yaml_is_byte_stable() -> None:
+    assert _dump_af(CANONICAL_APPLICATION_FORM) == EXPECTED_APPLICATION_FORM_YAML
 
 
 def test_visa_field_order_matches_inheritance() -> None:

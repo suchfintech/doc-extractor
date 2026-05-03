@@ -50,3 +50,18 @@ visa:
 verifier:
   provider: anthropic
   model: claude-sonnet-4-6-20260101
+
+# Epic 5 compliance documents — Sonnet across the board. Box-tick discipline
+# (PEP), outcome normalisation (verification reports), and handwritten-field
+# OCR (application forms) all benefit from the stronger model.
+pep_declaration:
+  provider: anthropic
+  model: claude-sonnet-4-6-20260101
+
+verification_report:
+  provider: anthropic
+  model: claude-sonnet-4-6-20260101
+
+application_form:
+  provider: anthropic
+  model: claude-sonnet-4-6-20260101

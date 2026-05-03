@@ -40,10 +40,13 @@ from collections.abc import Callable
 
 from agno.agent import Agent
 
+from doc_extractor.agents.application_form import create_application_form_agent
 from doc_extractor.agents.driver_licence import create_driver_licence_agent
 from doc_extractor.agents.national_id import create_national_id_agent
 from doc_extractor.agents.passport import create_passport_agent
 from doc_extractor.agents.payment_receipt import create_payment_receipt_agent
+from doc_extractor.agents.pep_declaration import create_pep_declaration_agent
+from doc_extractor.agents.verification_report import create_verification_report_agent
 from doc_extractor.agents.visa import create_visa_agent
 
 AgentFactory = Callable[..., Agent]
@@ -72,10 +75,11 @@ FACTORIES: dict[str, AgentFactory] = {
     "Visa": create_visa_agent,
     # Epic 3 — fully implemented
     "PaymentReceipt": create_payment_receipt_agent,
+    # Epic 5 — compliance documents (Story 5.1)
+    "PEP_Declaration": create_pep_declaration_agent,
+    "VerificationReport": create_verification_report_agent,
+    "ApplicationForm": create_application_form_agent,
     # Epic 5 — placeholders (replace with real factories as each ships):
-    "PEP_Declaration": _other_placeholder,
-    "VerificationReport": _other_placeholder,
-    "ApplicationForm": _other_placeholder,
     "BankStatement": _other_placeholder,
     "BankAccountConfirmation": _other_placeholder,
     "CompanyExtract": _other_placeholder,

@@ -22,9 +22,12 @@ from agno.models.base import Model
 
 from doc_extractor.agents import registry
 from doc_extractor.agents.registry import FACTORIES, _other_placeholder
+from doc_extractor.schemas.application_form import ApplicationForm
 from doc_extractor.schemas.classification import DOC_TYPES
 from doc_extractor.schemas.ids import DriverLicence, NationalID, Passport, Visa
 from doc_extractor.schemas.payment_receipt import PaymentReceipt
+from doc_extractor.schemas.pep_declaration import PEP_Declaration
+from doc_extractor.schemas.verification_report import VerificationReport
 
 REAL_FACTORIES: dict[str, type] = {
     "Passport": Passport,
@@ -32,12 +35,13 @@ REAL_FACTORIES: dict[str, type] = {
     "NationalID": NationalID,
     "Visa": Visa,
     "PaymentReceipt": PaymentReceipt,
+    # Story 5.1 — Epic 5 compliance documents promoted from _other_placeholder
+    "PEP_Declaration": PEP_Declaration,
+    "VerificationReport": VerificationReport,
+    "ApplicationForm": ApplicationForm,
 }
 
 PLACEHOLDER_DOC_TYPES = (
-    "PEP_Declaration",
-    "VerificationReport",
-    "ApplicationForm",
     "BankStatement",
     "BankAccountConfirmation",
     "CompanyExtract",
@@ -66,10 +70,13 @@ def mocked_factory_deps(monkeypatch: pytest.MonkeyPatch) -> None:
     offline.
     """
     from doc_extractor.agents import (
+        application_form,
         driver_licence,
         national_id,
         passport,
         payment_receipt,
+        pep_declaration,
+        verification_report,
         visa,
     )
 
@@ -78,7 +85,16 @@ def mocked_factory_deps(monkeypatch: pytest.MonkeyPatch) -> None:
         m.id = kwargs.get("model_id")
         return m
 
-    for module in (passport, driver_licence, national_id, visa, payment_receipt):
+    for module in (
+        passport,
+        driver_licence,
+        national_id,
+        visa,
+        payment_receipt,
+        pep_declaration,
+        verification_report,
+        application_form,
+    ):
         create_mock = MagicMock(side_effect=_make_model)
         validate_mock = MagicMock(return_value="test-api-key")
         load_prompt_mock = MagicMock(return_value=("PROMPT BODY", "0.1.0"))
