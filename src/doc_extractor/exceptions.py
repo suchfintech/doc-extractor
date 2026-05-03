@@ -13,3 +13,11 @@ class AuthenticationError(DocExtractorError):
 
 class ConfigurationError(DocExtractorError):
     """Raised when configuration is malformed, missing, or fails validation."""
+
+
+class BodyParseUnmatchedError(DocExtractorError):
+    """Raised when neither parse_chinese nor parse_nz can extract anything from a body.
+
+    Carries the (truncated) body for diagnostic logs without exposing PII to
+    callers that have already filtered the message.
+    """

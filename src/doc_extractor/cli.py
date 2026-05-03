@@ -5,8 +5,9 @@ import asyncio
 import sys
 
 from doc_extractor import __version__
-from doc_extractor.exceptions import ConfigurationError
+from doc_extractor.exceptions import BodyParseUnmatchedError, ConfigurationError
 from doc_extractor.extract import extract
+from doc_extractor.pipelines import body_parse_path
 
 EXIT_OK = 0
 EXIT_RUNTIME_ERROR = 1
@@ -53,6 +54,17 @@ def build_parser() -> argparse.ArgumentParser:
         dest="dry_run",
         help="Render but do not write to S3; print the .md to stdout instead.",
     )
+    extract_parser.add_argument(
+        "--body-parse-only",
+        action="store_true",
+        dest="body_parse_only",
+        help=(
+            "Skip the Vision pipeline. Read the existing analysis .md, run "
+            "body-parse repair (CN labels first, NZ narrative fallback), and "
+            "write back a frontmatter-only update. Body markdown is preserved "
+            "byte-identical."
+        ),
+    )
 
     return parser
 
@@ -67,19 +79,25 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_OK
 
     try:
-        asyncio.run(
-            extract(
-                key=args.key,
-                provider=args.provider,
-                model=args.model,
-                verbose=args.verbose,
-                show_image=args.show_image,
-                dry_run=args.dry_run,
+        if args.body_parse_only:
+            asyncio.run(body_parse_path.run(args.key))
+        else:
+            asyncio.run(
+                extract(
+                    key=args.key,
+                    provider=args.provider,
+                    model=args.model,
+                    verbose=args.verbose,
+                    show_image=args.show_image,
+                    dry_run=args.dry_run,
+                )
             )
-        )
     except ConfigurationError as exc:
         print(f"configuration error: {exc}", file=sys.stderr)
         return EXIT_CONFIGURATION_ERROR
+    except BodyParseUnmatchedError as exc:
+        print(f"body-parse unmatched: {exc}", file=sys.stderr)
+        return EXIT_RUNTIME_ERROR
     except Exception as exc:  # noqa: BLE001 — CLI top-level catches everything for exit-code mapping
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_RUNTIME_ERROR

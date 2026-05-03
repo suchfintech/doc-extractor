@@ -67,6 +67,18 @@ def head_analysis(key: str) -> bool:
     return True
 
 
+def read_analysis(key: str) -> bytes:
+    """Read ``s3://golden-mountain-analysis/<key>`` and return the raw bytes.
+
+    The caller decodes (typically UTF-8). Errors propagate; in particular a
+    missing object surfaces as ``ClientError`` with code ``NoSuchKey`` so the
+    caller can decide between treating that as a 404 or a hard failure.
+    """
+    response = _get_client().get_object(Bucket=ANALYSIS_BUCKET, Key=key)
+    body: bytes = response["Body"].read()
+    return body
+
+
 def write_analysis(key: str, body: str | bytes) -> None:
     """Write a Markdown analysis blob, UTF-8 encoded, to the analysis bucket.
 
