@@ -14,10 +14,28 @@ are kept for the FR27 one-quarter overlap window. They expire **2026-08-03**.
 """
 from __future__ import annotations
 
+from typing import ClassVar
+
 from doc_extractor.schemas.base import Frontmatter
 
 
 class PaymentReceipt(Frontmatter):
+    """Payment-receipt extraction schema with FR27 deprecation registry.
+
+    ``_deprecated_aliases`` (Story 7.1) maps deprecated alias field names to
+    their canonical replacements. ``markdown_io.render_to_md`` reads this map
+    and dual-emits both names during the overlap window;
+    ``markdown_io.parse_md`` falls back ``old → new`` when only the legacy
+    field is present. The aliases expire 2026-08-03 per FR27 — at that
+    point drop the deprecated fields, drop this map, and bump
+    ``extractor_version``.
+    """
+
+    _deprecated_aliases: ClassVar[dict[str, str]] = {
+        "receipt_counterparty_name": "receipt_credit_account_name",
+        "receipt_counterparty_account": "receipt_credit_account_number",
+    }
+
     receipt_amount: str | None = ""
     receipt_currency: str | None = ""
     receipt_time: str | None = ""

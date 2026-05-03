@@ -1,11 +1,10 @@
-"""Vision pipeline (Passport-only for v1).
+"""Vision pipeline.
 
 Wires together: HEAD-skip → MIME-detect → (PDF→PNG | presign) → classify →
-route → extract → render → write. Verifier and retry are deliberately
-absent at this stage; Stories 3.7 and 3.8 land them. Non-Passport
-classifications surface ``NotImplementedError`` because Story 1.10's scope
-is the single Passport specialist; later epics unlock the rest of the
-15-way fan-out.
+route → extract → (verify if PaymentReceipt) → render → write. Story 3.7
+added the verifier step on the PaymentReceipt branch; Story 4.4 expands
+verification to the ID-document family. Other doc-types still surface
+``NotImplementedError`` until their specialists land.
 
 Story 3.3 added the MIME pre-step: before classifier dispatch, ``head_source``
 returns the object's content type. PDFs are downloaded and rendered to PNG
@@ -16,6 +15,7 @@ in Epic 5). Native images keep the presigned-URL fast path.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from agno.media import Image
@@ -23,12 +23,17 @@ from agno.media import Image
 from doc_extractor import markdown_io, s3_io
 from doc_extractor.agents.classifier import create_classifier_agent
 from doc_extractor.agents.passport import create_passport_agent
+from doc_extractor.agents.payment_receipt import create_payment_receipt_agent
+from doc_extractor.agents.verifier import create_verifier_agent
 from doc_extractor.pdf.converter import PdfMode, pdf_to_images
 from doc_extractor.schemas.classification import Classification
 from doc_extractor.schemas.ids import Passport
+from doc_extractor.schemas.payment_receipt import PaymentReceipt
+from doc_extractor.schemas.verifier import VerifierAudit
 
 CLASSIFIER_INPUT = "Classify this document image."
 PASSPORT_INPUT = "Extract the passport fields from this image."
+PAYMENT_RECEIPT_INPUT = "Extract the payment receipt fields from this image."
 
 PDF_CONTENT_TYPE = "application/pdf"
 PDF_KEY_SUFFIX = ".pdf"
@@ -83,13 +88,20 @@ async def run(source_key: str) -> dict[str, Any]:
     """Process a single source document end-to-end.
 
     Returns a result dict with ``analysis_key``, ``skipped`` (HEAD-skip
-    flag), and ``doc_type``. On HEAD-skip the dict carries ``doc_type=""``
-    because the classifier was never invoked.
+    flag), ``doc_type``, and ``verifier_audit`` (the dumped
+    :class:`VerifierAudit` for PaymentReceipt-typed runs, ``None`` otherwise
+    — including HEAD-skip and Passport runs). Story 3.9 will consume the
+    audit when writing disagreement-queue entries.
     """
     analysis_key = _analysis_key_for(source_key)
 
     if s3_io.head_analysis(analysis_key):
-        return {"analysis_key": analysis_key, "skipped": True, "doc_type": ""}
+        return {
+            "analysis_key": analysis_key,
+            "skipped": True,
+            "doc_type": "",
+            "verifier_audit": None,
+        }
 
     image = _build_image_for_source(source_key)
 
@@ -101,24 +113,55 @@ async def run(source_key: str) -> dict[str, Any]:
             f"Classifier returned {type(classification).__name__}, expected Classification"
         )
 
-    if classification.doc_type != "Passport":
+    extracted: Passport | PaymentReceipt
+    verifier_audit: VerifierAudit | None = None
+
+    if classification.doc_type == "Passport":
+        passport_agent = create_passport_agent()
+        extraction_result = await passport_agent.arun(PASSPORT_INPUT, images=[image])
+        passport = extraction_result.content
+        if not isinstance(passport, Passport):
+            raise TypeError(
+                f"Passport agent returned {type(passport).__name__}, expected Passport"
+            )
+        extracted = passport
+
+    elif classification.doc_type == "PaymentReceipt":
+        payment_receipt_agent = create_payment_receipt_agent()
+        extraction_result = await payment_receipt_agent.arun(
+            PAYMENT_RECEIPT_INPUT, images=[image]
+        )
+        receipt = extraction_result.content
+        if not isinstance(receipt, PaymentReceipt):
+            raise TypeError(
+                f"PaymentReceipt agent returned {type(receipt).__name__},"
+                f" expected PaymentReceipt"
+            )
+        extracted = receipt
+
+        # Story 3.7 — verifier audit on PaymentReceipt. Story 4.4 expands
+        # this to the ID-document family.
+        verifier_input = json.dumps(receipt.model_dump(), ensure_ascii=False, indent=2)
+        verifier_agent = create_verifier_agent()
+        verifier_result = await verifier_agent.arun(verifier_input, images=[image])
+        audit = verifier_result.content
+        if not isinstance(audit, VerifierAudit):
+            raise TypeError(
+                f"Verifier agent returned {type(audit).__name__}, expected VerifierAudit"
+            )
+        verifier_audit = audit
+
+    else:
         raise NotImplementedError(
             f"specialist not yet implemented for doc_type={classification.doc_type!r}"
         )
 
-    passport_agent = create_passport_agent()
-    extraction_result = await passport_agent.arun(PASSPORT_INPUT, images=[image])
-    passport = extraction_result.content
-    if not isinstance(passport, Passport):
-        raise TypeError(
-            f"Passport agent returned {type(passport).__name__}, expected Passport"
-        )
-
-    md_text = markdown_io.render_to_md(passport)
+    md_text = markdown_io.render_to_md(extracted)
     s3_io.write_analysis(analysis_key, md_text)
 
     return {
         "analysis_key": analysis_key,
         "skipped": False,
         "doc_type": classification.doc_type,
+        "verifier_audit": verifier_audit.model_dump() if verifier_audit else None,
     }

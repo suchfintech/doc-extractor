@@ -12,6 +12,8 @@ from doc_extractor import s3_io
 from doc_extractor.pipelines import vision_path
 from doc_extractor.schemas.classification import Classification
 from doc_extractor.schemas.ids import Passport
+from doc_extractor.schemas.payment_receipt import PaymentReceipt
+from doc_extractor.schemas.verifier import VerifierAudit
 
 SOURCE_KEY = "passports/sample-001.jpeg"
 EXPECTED_ANALYSIS_KEY = f"{SOURCE_KEY}.md"
@@ -95,6 +97,7 @@ async def test_happy_path_writes_passport_markdown(
         "analysis_key": EXPECTED_ANALYSIS_KEY,
         "skipped": False,
         "doc_type": "Passport",
+        "verifier_audit": None,
     }
     patched_io["head"].assert_called_once_with(EXPECTED_ANALYSIS_KEY)
     patched_io["presign"].assert_called_once()
@@ -132,6 +135,7 @@ async def test_head_skip_short_circuits_before_provider(
         "analysis_key": EXPECTED_ANALYSIS_KEY,
         "skipped": True,
         "doc_type": "",
+        "verifier_audit": None,
     }
     patched_io["head"].assert_called_once_with(EXPECTED_ANALYSIS_KEY)
     patched_io["presign"].assert_not_called()
@@ -211,3 +215,143 @@ def test_pdf_mode_for_returns_all_pages_only_for_bank_statement() -> None:
     assert vision_path._pdf_mode_for("BankStatement") == "all_pages"
     for doc_type in ("Passport", "DriverLicence", "PaymentReceipt", "Other", ""):
         assert vision_path._pdf_mode_for(doc_type) == "page1"
+
+
+# ---------------------------------------------------------------------------
+# Story 3.7 — verifier step on PaymentReceipt
+# ---------------------------------------------------------------------------
+
+
+PR_SOURCE_KEY = "documents/transactions/12345/abc.jpeg"
+PR_ANALYSIS_KEY = f"{PR_SOURCE_KEY}.md"
+
+
+def _payment_receipt_fixture() -> PaymentReceipt:
+    return PaymentReceipt(
+        doc_type="PaymentReceipt",
+        jurisdiction="CN",
+        receipt_amount="15000.00",
+        receipt_currency="CNY",
+        receipt_time="2025-07-01T00:00:00Z",
+        receipt_debit_account_name="张三",
+        receipt_debit_account_number="6217 **** **** 0083",
+        receipt_debit_bank_name="中国工商银行",
+        receipt_credit_account_name="李四",
+        receipt_credit_account_number="6230 **** **** 2235",
+        receipt_credit_bank_name="平安银行",
+    )
+
+
+def _verifier_audit_fixture(overall: str = "pass") -> VerifierAudit:
+    # The validator pins `overall` to the field-audits derivation, so feed
+    # field-audits that match the requested overall.
+    if overall == "fail":
+        field_audits = {"receipt_debit_account_name": "disagree"}
+    elif overall == "uncertain":
+        field_audits = {"receipt_debit_account_name": "abstain"}
+    else:
+        field_audits = {"receipt_debit_account_name": "agree"}
+    return VerifierAudit(field_audits=field_audits, notes="test")  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_verifier_runs_when_classification_is_payment_receipt(
+    patched_io: dict[str, MagicMock], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Happy path: classifier→PaymentReceipt→specialist→verifier→write."""
+    classifier_agent, classifier_arun = _make_async_agent(
+        Classification(doc_type="PaymentReceipt", jurisdiction="CN")
+    )
+    pr_agent, pr_arun = _make_async_agent(_payment_receipt_fixture())
+    verifier_agent, verifier_arun = _make_async_agent(_verifier_audit_fixture("pass"))
+
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(
+        vision_path, "create_payment_receipt_agent", lambda: pr_agent
+    )
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+
+    result = await vision_path.run(PR_SOURCE_KEY)
+
+    assert result["doc_type"] == "PaymentReceipt"
+    assert result["analysis_key"] == PR_ANALYSIS_KEY
+    assert result["skipped"] is False
+    # Verifier output round-tripped to dict in the result payload.
+    assert isinstance(result["verifier_audit"], dict)
+    assert result["verifier_audit"]["overall"] == "pass"
+    assert result["verifier_audit"]["field_audits"]["receipt_debit_account_name"] == "agree"
+
+    assert classifier_arun.await_count == 1
+    assert pr_arun.await_count == 1
+    assert verifier_arun.await_count == 1
+    # The verifier received the JSON dump of the specialist's claim plus the image.
+    verifier_input = verifier_arun.call_args.args[0]
+    assert isinstance(verifier_input, str)
+    assert "receipt_debit_account_name" in verifier_input
+    assert "张三" in verifier_input
+    assert verifier_arun.call_args.kwargs["images"]
+
+
+@pytest.mark.asyncio
+async def test_verifier_fail_verdict_propagates_to_result_dict(
+    patched_io: dict[str, MagicMock], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `fail` verifier verdict reaches the result dict so Story 3.9 can route to queue."""
+    classifier_agent, _ = _make_async_agent(
+        Classification(doc_type="PaymentReceipt", jurisdiction="CN")
+    )
+    pr_agent, _ = _make_async_agent(_payment_receipt_fixture())
+    verifier_agent, _ = _make_async_agent(_verifier_audit_fixture("fail"))
+
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_payment_receipt_agent", lambda: pr_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+
+    result = await vision_path.run(PR_SOURCE_KEY)
+
+    assert result["verifier_audit"]["overall"] == "fail"
+
+
+@pytest.mark.asyncio
+async def test_verifier_skipped_when_classification_is_passport(
+    patched_io: dict[str, MagicMock], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verifier gating: for non-PaymentReceipt types, the verifier agent is
+    never constructed and never called. Sentinel for Story 4.4 (which will
+    expand verification to ID types and need to update this test)."""
+    classifier_agent, _ = _make_async_agent(
+        Classification(doc_type="Passport", jurisdiction="NZ")
+    )
+    passport_agent, _ = _make_async_agent(_passport_fixture())
+    verifier_agent, verifier_arun = _make_async_agent(_verifier_audit_fixture())
+
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_passport_agent", lambda: passport_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+
+    result = await vision_path.run(SOURCE_KEY)
+
+    assert result["doc_type"] == "Passport"
+    assert result["verifier_audit"] is None
+    assert verifier_arun.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_verifier_not_called_when_classification_is_other(
+    patched_io: dict[str, MagicMock], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`Other` raises NotImplementedError before any specialist runs — the
+    verifier must NOT be constructed or called along that path either."""
+    classifier_agent, _ = _make_async_agent(
+        Classification(doc_type="Other", jurisdiction="NZ")
+    )
+    verifier_agent, verifier_arun = _make_async_agent(_verifier_audit_fixture())
+
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+
+    with pytest.raises(NotImplementedError, match="Other"):
+        await vision_path.run(SOURCE_KEY)
+
+    assert verifier_arun.await_count == 0
+    patched_io["write"].assert_not_called()

@@ -17,20 +17,45 @@ from typing import Any
 import yaml  # type: ignore[import-untyped]  # dev-dep `types-PyYAML` not yet wired
 
 from doc_extractor.schemas import Frontmatter, Passport
+from doc_extractor.schemas.payment_receipt import PaymentReceipt
 
 _FENCE = "---"
 
-# `Frontmatter` itself has `extra="forbid"`, so Passport-specific keys would
+# `Frontmatter` itself has `extra="forbid"`, so subclass-specific keys would
 # fail to validate against the base class. Dispatch on `doc_type` to the
 # matching subclass; unknown / empty doc_types fall back to `Frontmatter`.
 _SCHEMA_BY_DOC_TYPE: dict[str, type[Frontmatter]] = {
     "Passport": Passport,
+    "PaymentReceipt": PaymentReceipt,
 }
 
 
+def _apply_deprecated_alias_dual_emit(
+    cls: type[Frontmatter], data: dict[str, Any]
+) -> None:
+    """Story 7.1 / FR27 — populate both old and new alias fields on render.
+
+    For each ``(old_name, new_name)`` pair declared on
+    ``cls._deprecated_aliases``: if either side has a non-empty value but
+    the other is empty, copy the value across. If both are present, leave
+    them — render keeps both even when they disagree (the agent supplied
+    them; reconciliation is the consumer's call).
+    """
+    aliases: dict[str, str] = getattr(cls, "_deprecated_aliases", {}) or {}
+    for old_name, new_name in aliases.items():
+        old_value = data.get(old_name)
+        new_value = data.get(new_name)
+        if new_value and not old_value:
+            data[old_name] = new_value
+        elif old_value and not new_value:
+            data[new_name] = old_value
+
+
 def render_to_md(frontmatter: Frontmatter) -> str:
+    data = frontmatter.model_dump()
+    _apply_deprecated_alias_dual_emit(type(frontmatter), data)
     body = yaml.safe_dump(
-        frontmatter.model_dump(),
+        data,
         allow_unicode=True,
         sort_keys=False,
     )
@@ -55,4 +80,15 @@ def parse_md(text: str) -> Frontmatter:
         raise ValueError(f"frontmatter must be a mapping, got {type(data).__name__}")
 
     schema_class = _SCHEMA_BY_DOC_TYPE.get(str(data.get("doc_type", "")), Frontmatter)
+
+    # Story 7.1 / FR27 — read-side compat. Consumers still emitting only the
+    # deprecated alias get their value copied into the new field name before
+    # validation. When both are populated and disagree, the new field wins
+    # (the canonical source); we only fill in when new is missing/empty.
+    aliases: dict[str, str] = getattr(schema_class, "_deprecated_aliases", {}) or {}
+    for old_name, new_name in aliases.items():
+        old_value = data.get(old_name)
+        if old_value and not data.get(new_name):
+            data[new_name] = old_value
+
     return schema_class.model_validate(data)

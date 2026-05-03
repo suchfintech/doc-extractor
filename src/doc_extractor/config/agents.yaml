@@ -41,3 +41,12 @@ national_id:
 visa:
   provider: anthropic
   model: claude-sonnet-4-6-20260101
+
+# VerifierAgent — Sonnet (NOT Haiku). The verifier's job is to catch errors
+# the specialist made, so cheap-model verification is self-defeating; the
+# verifier needs at least the same reasoning capacity as the specialist it's
+# auditing. Used on PaymentReceipt today (Story 3.7); expands to the four ID
+# types in Story 4.4.
+verifier:
+  provider: anthropic
+  model: claude-sonnet-4-6-20260101
