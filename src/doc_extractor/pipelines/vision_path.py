@@ -144,6 +144,59 @@ def _is_pdf_source(source_key: str, content_type: str) -> bool:
     return source_key.lower().endswith(PDF_KEY_SUFFIX)
 
 
+_EMPTY_METADATA: dict[str, Any] = {
+    "provider": "",
+    "model": "",
+    "latency_ms": 0.0,
+    "cost_usd": 0.0,
+}
+
+
+def _read_run_response(agent: Agent | None) -> tuple[str, dict[str, Any]]:
+    """Story 6.1 — best-effort raw-text + metadata capture from an Agent.
+
+    Agno exposes the last call's state on ``agent.run_response`` after
+    ``arun`` returns: ``messages[-1].content`` is the model's raw text and
+    ``metrics`` carries provider / model / latency_ms / cost_usd. The
+    surface is best-effort — older Agno versions may not populate every
+    attr — so this helper degrades to empty defaults rather than raising.
+
+    Defensive against ``MagicMock`` auto-attrs (every getattr on a
+    ``MagicMock`` returns a child mock, which is truthy). The
+    ``isinstance`` checks below ensure we only trust real ``str`` /
+    numeric values; bare-``MagicMock`` test fixtures fall back to defaults.
+    """
+    raw_text = ""
+    metadata = dict(_EMPTY_METADATA)
+
+    if agent is None:
+        return raw_text, metadata
+
+    run_response = getattr(agent, "run_response", None)
+    if run_response is None:
+        return raw_text, metadata
+
+    messages = getattr(run_response, "messages", None)
+    if isinstance(messages, list) and messages:
+        last = messages[-1]
+        last_content = getattr(last, "content", None)
+        if isinstance(last_content, str):
+            raw_text = last_content
+
+    metrics = getattr(run_response, "metrics", None)
+    if metrics is not None:
+        for key in ("provider", "model"):
+            value = getattr(metrics, key, None)
+            if isinstance(value, str) and value:
+                metadata[key] = value
+        for key in ("latency_ms", "cost_usd"):
+            value = getattr(metrics, key, None)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                metadata[key] = float(value)
+
+    return raw_text, metadata
+
+
 def _populate_pipeline_provenance(
     extracted: Frontmatter, *, agent_name: str
 ) -> None:
@@ -228,8 +281,18 @@ async def run(source_key: str) -> dict[str, Any]:
     # the escalation path is dormant in production today; the wrapping is
     # forward-compat and exercises the validation_failure → disagreement
     # queue branch uniformly across types.
+    #
+    # Story 6.1 — the factory closure captures every constructed agent so
+    # we can read the LAST agent's ``run_response`` for the forensic
+    # payload (raw text + metadata) regardless of whether the retry
+    # succeeded or exhausted. Without this, the retry layer holds the
+    # only reference and the caller can't see the raw model output.
+    captured_agents: list[Agent] = []
+
     def _retry_factory(_tier: str) -> Agent:
-        return spec.factory()
+        agent = spec.factory()
+        captured_agents.append(agent)
+        return agent
 
     try:
         content, retry_count = await with_validation_retry(
@@ -243,13 +306,19 @@ async def run(source_key: str) -> dict[str, Any]:
         )
     except PydanticValidationError:
         # No more retries possible — route to disagreement queue and
-        # propagate so the caller surfaces the failure.
+        # propagate so the caller surfaces the failure. Story 6.1 inlines
+        # the raw response from the LAST attempt so reviewers can see
+        # exactly what the model emitted.
+        last_agent = captured_agents[-1] if captured_agents else None
+        primary_raw = _read_run_response(last_agent)
         record_disagreement(
             source_key=source_key,
             primary=None,
             verifier=None,
             status="validation_failure",
             extractor_version=__version__,
+            primary_raw=primary_raw,
+            verifier_raw=None,
         )
         raise
 
@@ -282,14 +351,22 @@ async def run(source_key: str) -> dict[str, Any]:
     # Story 3.9 — write a disagreement-queue entry when the verifier flagged
     # ≥1 field as `disagree` (overall=="fail"). `uncertain` is NOT written:
     # downstream surfaces it as advisory only.
+    # Story 6.1 — inline the raw responses from the successful specialist
+    # call (last agent the retry layer used) and the verifier call so the
+    # disagreement entry carries the full forensic payload.
     disagreement_key: str | None = None
     if verifier_audit.overall == "fail":
+        last_agent = captured_agents[-1] if captured_agents else None
+        primary_raw = _read_run_response(last_agent)
+        verifier_raw = _read_run_response(verifier_agent)
         disagreement_key = record_disagreement(
             source_key=source_key,
             primary=extracted,
             verifier=verifier_audit,
             status="disagreement",
             extractor_version=__version__,
+            primary_raw=primary_raw,
+            verifier_raw=verifier_raw,
         )
 
     return {

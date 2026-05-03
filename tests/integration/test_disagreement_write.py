@@ -84,9 +84,13 @@ def test_record_disagreement_writes_to_disagreements_prefix(
     assert returned_key == written_key
 
 
-def test_disagreement_json_carries_all_six_top_level_fields(
+def test_disagreement_json_carries_all_top_level_fields(
     s3_writes: list[tuple[str, str]],
 ) -> None:
+    """Story 6.1 expanded the JSON shape from the original 6 fields to 10
+    by inlining raw model responses + per-call metadata. Callers that
+    don't supply the raw kwargs still emit the four new fields with
+    ``None`` values, preserving a stable schema for the consumers."""
     record_disagreement(
         source_key="doc-001.jpeg",
         primary=_payment_receipt(),
@@ -105,7 +109,17 @@ def test_disagreement_json_carries_all_six_top_level_fields(
         "agreement_status",
         "timestamp",
         "extractor_version",
+        "primary_raw_response_text",
+        "primary_raw_response_metadata",
+        "verifier_raw_response_text",
+        "verifier_raw_response_metadata",
     }
+    # Backward-compat: legacy callers (3.9 surface) leave the 6.1 raw
+    # fields as None — JSON renders them as null.
+    assert entry["primary_raw_response_text"] is None
+    assert entry["primary_raw_response_metadata"] is None
+    assert entry["verifier_raw_response_text"] is None
+    assert entry["verifier_raw_response_metadata"] is None
     assert entry["source_key"] == "doc-001.jpeg"
     assert entry["agreement_status"] == "disagreement"
     assert entry["extractor_version"] == "0.1.0"

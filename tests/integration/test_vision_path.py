@@ -756,3 +756,80 @@ async def test_verifier_failure_on_driver_licence_writes_disagreement(
     assert isinstance(call["primary"], DriverLicence)
     assert call["status"] == "disagreement"
     assert result["disagreement_key"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Story 6.1 — raw-response propagation through to record_disagreement
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_raw_responses_propagate_to_record_disagreement_on_fail(
+    patched_io: dict[str, MagicMock],
+    captured_disagreement_calls: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the verifier returns ``overall=='fail'``, vision_path must call
+    ``record_disagreement`` with ``primary_raw=...`` and ``verifier_raw=...``
+    populated from the agents' ``run_response``. Story 6.1 contract."""
+    classifier_agent, _ = _make_async_agent(
+        Classification(doc_type="PaymentReceipt", jurisdiction="CN")
+    )
+
+    # Build agents whose run_response carries the raw text + metadata
+    # vision_path._read_run_response should pull through.
+    pr_last_message = MagicMock(content="primary raw text — 张三")
+    pr_metrics = MagicMock(
+        provider="anthropic",
+        model="claude-sonnet-4-6-20260101",
+        latency_ms=12.5,
+        cost_usd=0.01,
+    )
+    pr_run_response = MagicMock(
+        content=_payment_receipt_fixture(),
+        messages=[pr_last_message],
+        metrics=pr_metrics,
+    )
+    pr_agent = MagicMock(spec=Agent)
+    pr_agent.arun = AsyncMock(return_value=pr_run_response)
+    pr_agent.run_response = pr_run_response
+
+    ver_last_message = MagicMock(content="verifier raw text — disagree on credit")
+    ver_metrics = MagicMock(
+        provider="anthropic",
+        model="claude-sonnet-4-6-20260101",
+        latency_ms=8.4,
+        cost_usd=0.02,
+    )
+    ver_run_response = MagicMock(
+        content=_verifier_audit_fixture("fail"),
+        messages=[ver_last_message],
+        metrics=ver_metrics,
+    )
+    verifier_agent = MagicMock(spec=Agent)
+    verifier_agent.arun = AsyncMock(return_value=ver_run_response)
+    verifier_agent.run_response = ver_run_response
+
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_payment_receipt_agent", lambda: pr_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+
+    await vision_path.run(PR_SOURCE_KEY)
+
+    assert len(captured_disagreement_calls) == 1
+    call = captured_disagreement_calls[0]
+    # Both raw kwargs populated on the fail path.
+    assert "primary_raw" in call
+    assert "verifier_raw" in call
+    pr_text, pr_meta = call["primary_raw"]
+    assert pr_text == "primary raw text — 张三"
+    assert pr_meta == {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-6-20260101",
+        "latency_ms": 12.5,
+        "cost_usd": 0.01,
+    }
+    ver_text, ver_meta = call["verifier_raw"]
+    assert ver_text == "verifier raw text — disagree on credit"
+    assert ver_meta["provider"] == "anthropic"
+    assert ver_meta["latency_ms"] == 8.4
