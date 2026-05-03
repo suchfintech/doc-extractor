@@ -6,3 +6,9 @@
 passport:
   provider: anthropic
   model: claude-sonnet-4-6-20260101
+
+# Cheapest configured provider (Haiku) — classifier is the high-volume entrypoint
+# and only needs coarse routing, so it runs on the smaller model.
+classifier:
+  provider: anthropic
+  model: claude-haiku-4-5-20251001
