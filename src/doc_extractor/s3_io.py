@@ -49,6 +49,31 @@ def get_presigned_url(bucket: str, key: str, ttl: int = DEFAULT_PRESIGN_TTL_SECO
     return url
 
 
+def head_source(key: str) -> dict[str, str | int]:
+    """Return source-object metadata for the MIME-detection pre-step.
+
+    Returns ``{"content_type": <str>, "size": <int>}`` with empty / zero
+    values when S3 omits the corresponding response field. Errors propagate;
+    a missing object surfaces as ``ClientError`` so the caller can decide.
+    """
+    response = _get_client().head_object(Bucket=SOURCE_BUCKET, Key=key)
+    content_type = str(response.get("ContentType") or "")
+    size = int(response.get("ContentLength") or 0)
+    return {"content_type": content_type, "size": size}
+
+
+def get_source_bytes(key: str) -> bytes:
+    """Fetch the full body of ``s3://golden-mountain-storage/<key>`` as bytes.
+
+    Used when a source needs local preprocessing (currently: PDFs rendered
+    to PNGs by ``pdf.converter.pdf_to_images``) instead of being handed to
+    the model as a presigned URL.
+    """
+    response = _get_client().get_object(Bucket=SOURCE_BUCKET, Key=key)
+    body: bytes = response["Body"].read()
+    return body
+
+
 def head_analysis(key: str) -> bool:
     """Return True iff ``s3://golden-mountain-analysis/<key>`` exists.
 

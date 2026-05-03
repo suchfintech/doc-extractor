@@ -49,14 +49,28 @@ def _make_async_agent(content: Any) -> tuple[Agent, AsyncMock]:
 
 @pytest.fixture
 def patched_io(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
-    """Patch S3 and agent factories. ``head_analysis`` defaults to False."""
+    """Patch S3 and agent factories. ``head_analysis`` defaults to False.
+
+    ``head_source`` defaults to ``image/jpeg`` so the legacy non-PDF tests
+    keep flowing through the presigned-URL fast path.
+    """
     head = MagicMock(return_value=False)
+    head_src = MagicMock(return_value={"content_type": "image/jpeg", "size": 1024})
     presign = MagicMock(return_value="https://example.invalid/presigned-url")
     write = MagicMock(return_value=None)
+    get_bytes = MagicMock(return_value=b"")
     monkeypatch.setattr(s3_io, "head_analysis", head)
+    monkeypatch.setattr(s3_io, "head_source", head_src)
     monkeypatch.setattr(s3_io, "get_presigned_url", presign)
+    monkeypatch.setattr(s3_io, "get_source_bytes", get_bytes)
     monkeypatch.setattr(s3_io, "write_analysis", write)
-    return {"head": head, "presign": presign, "write": write}
+    return {
+        "head": head,
+        "head_src": head_src,
+        "presign": presign,
+        "get_bytes": get_bytes,
+        "write": write,
+    }
 
 
 @pytest.mark.asyncio
@@ -146,3 +160,54 @@ async def test_non_passport_classification_raises_not_implemented(
 
     assert passport_arun.await_count == 0
     patched_io["write"].assert_not_called()
+
+
+PDF_SOURCE_KEY = "passports/sample-001.pdf"
+EXPECTED_PDF_ANALYSIS_KEY = f"{PDF_SOURCE_KEY}.md"
+
+
+@pytest.mark.asyncio
+async def test_pdf_source_routes_through_pdf_to_images(
+    patched_io: dict[str, MagicMock], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PDFs go through pdf_to_images and reach the classifier as Image(content=...)."""
+    patched_io["head_src"].return_value = {
+        "content_type": "application/pdf",
+        "size": 4096,
+    }
+    fake_png = b"\x89PNG\r\n\x1a\nFAKE-PAGE-1"
+    patched_io["get_bytes"].return_value = b"%PDF-1.4 fake-bytes"
+    pdf_to_images_mock = MagicMock(return_value=[fake_png])
+    monkeypatch.setattr(vision_path, "pdf_to_images", pdf_to_images_mock)
+
+    classifier_agent, classifier_arun = _make_async_agent(
+        Classification(doc_type="Passport", jurisdiction="NZ")
+    )
+    passport_agent, _ = _make_async_agent(_passport_fixture())
+    monkeypatch.setattr(
+        vision_path, "create_classifier_agent", lambda: classifier_agent
+    )
+    monkeypatch.setattr(
+        vision_path, "create_passport_agent", lambda: passport_agent
+    )
+
+    result = await vision_path.run(PDF_SOURCE_KEY)
+
+    assert result["doc_type"] == "Passport"
+    assert result["analysis_key"] == EXPECTED_PDF_ANALYSIS_KEY
+    pdf_to_images_mock.assert_called_once()
+    args, kwargs = pdf_to_images_mock.call_args
+    assert args[0] == b"%PDF-1.4 fake-bytes"
+    assert kwargs.get("mode") == "page1"
+    patched_io["presign"].assert_not_called()
+
+    classifier_arun.assert_awaited_once()
+    sent_image = classifier_arun.call_args.kwargs["images"][0]
+    assert sent_image.url is None
+    assert sent_image.content == fake_png
+
+
+def test_pdf_mode_for_returns_all_pages_only_for_bank_statement() -> None:
+    assert vision_path._pdf_mode_for("BankStatement") == "all_pages"
+    for doc_type in ("Passport", "DriverLicence", "PaymentReceipt", "Other", ""):
+        assert vision_path._pdf_mode_for(doc_type) == "page1"

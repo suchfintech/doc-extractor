@@ -21,3 +21,11 @@ class BodyParseUnmatchedError(DocExtractorError):
     Carries the (truncated) body for diagnostic logs without exposing PII to
     callers that have already filtered the message.
     """
+
+
+class PDFConversionError(DocExtractorError):
+    """Raised when a PDF cannot be parsed or rendered to images.
+
+    Wraps PyMuPDF errors so callers can catch one project-local exception
+    instead of importing fitz / pymupdf to inspect upstream errors.
+    """
