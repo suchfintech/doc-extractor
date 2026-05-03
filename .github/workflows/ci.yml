@@ -23,8 +23,8 @@ jobs:
         run: .venv/bin/ruff format --check .
       - name: Mypy strict
         run: .venv/bin/mypy --strict src/doc_extractor
-      - name: Pytest (unit + integration + canonical)
-        run: .venv/bin/pytest tests/
+      - name: Pytest with coverage
+        run: .venv/bin/pytest --cov --cov-fail-under=85 tests/
       # TODO Story 2.7 — drop the `if [ -f ... ]` guard once
       # scripts/verify_canonical.py ships. The CI gate then becomes a
       # plain invocation; the YAML-validation test in

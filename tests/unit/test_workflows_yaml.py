@@ -25,7 +25,7 @@ REQUIRED_CI_STEP_NAMES: tuple[str, ...] = (
     "Ruff check",
     "Ruff format check",
     "Mypy strict",
-    "Pytest (unit + integration + canonical)",
+    "Pytest with coverage",
     "Cost-ceiling check",
 )
 

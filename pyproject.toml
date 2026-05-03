@@ -24,6 +24,7 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
+    "pytest-cov>=5.0.0",
     "ruff>=0.8.0",
     "mypy>=1.11.0",
 ]
@@ -56,3 +57,23 @@ namespace_packages = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+# Story 8.6 — coverage gate (NFR20). The CI Pytest step adds
+# `--cov --cov-fail-under=85` so a drop below 85% line coverage on
+# `src/doc_extractor/` fails the build. `--cov` reads `source` from the
+# section below; the omit list keeps prompt bodies and golden fixtures
+# out of the denominator.
+[tool.coverage.run]
+source = ["src/doc_extractor"]
+omit = [
+    "src/doc_extractor/prompts/*.md",
+    "tests/golden/**",
+    "**/__init__.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
