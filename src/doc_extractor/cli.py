@@ -82,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.body_parse_only:
             asyncio.run(body_parse_path.run(args.key))
         else:
-            asyncio.run(
+            result = asyncio.run(
                 extract(
                     key=args.key,
                     provider=args.provider,
@@ -92,6 +92,8 @@ def main(argv: list[str] | None = None) -> int:
                     dry_run=args.dry_run,
                 )
             )
+            status = "skipped (already extracted)" if result.skipped else "extracted"
+            print(f"{status}: {result.analysis_key}")
     except ConfigurationError as exc:
         print(f"configuration error: {exc}", file=sys.stderr)
         return EXIT_CONFIGURATION_ERROR

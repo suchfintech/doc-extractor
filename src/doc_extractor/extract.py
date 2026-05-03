@@ -1,21 +1,23 @@
-"""Library entry point: ``extract(key, ...)`` coroutine + verbose orchestration.
+"""Library entry point: ``extract(key, ...)`` + ``extract_batch(keys, ...)``.
 
-The simple path delegates to ``pipelines.vision_path.run(key)``. Verbose
-mode, ``--dry-run``, and per-invocation provider overrides all need to
-inspect intermediate state, so those paths inline the orchestration here so
-the five FR51 verbose sections can be emitted between steps.
+This module is the canonical surface for one-off and batched document
+extraction. Story 8.4 lifts HEAD-skip idempotency from the pipeline layer
+up to this entry point so already-extracted batches don't pay the
+pipeline-import cost. ``extract()`` always returns a typed
+:class:`ExtractedDoc`; the previous dict shape is gone.
 
-This module is the CLI's only call into the pipeline layer — keeping the
-verbose-printing concern out of ``vision_path.run`` so the latter remains a
-pure async producer of analysis artifacts.
+Verbose mode, ``--dry-run``, and per-invocation provider overrides need
+intermediate state, so those paths inline the orchestration here. The
+non-introspective fast path delegates to :func:`pipelines.vision_path.run`.
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
-from typing import Any
 
 from agno.media import Image
+from pydantic import BaseModel, Field
 
 from doc_extractor import markdown_io, s3_io
 from doc_extractor.agents.classifier import create_classifier_agent
@@ -28,9 +30,29 @@ from doc_extractor.schemas.ids import Passport
 CLASSIFIER_INPUT = vision_path.CLASSIFIER_INPUT
 PASSPORT_INPUT = vision_path.PASSPORT_INPUT
 
+DEFAULT_BATCH_CONCURRENCY = 10
+
+
+class ExtractedDoc(BaseModel):
+    """Typed return value for ``extract()`` and ``extract_batch()``.
+
+    ``doc_type`` is ``None`` when ``skipped`` is True — the classifier did
+    not run on a HEAD-skip and we deliberately don't reach into the
+    existing analysis just to fill in this field.
+    """
+
+    key: str
+    skipped: bool
+    analysis_key: str
+    doc_type: str | None = Field(default=None)
+
 
 def _section(title: str) -> None:
     print(f"=== {title} ===")
+
+
+def _analysis_key_for(key: str) -> str:
+    return f"{key}.md"
 
 
 async def extract(
@@ -41,23 +63,33 @@ async def extract(
     verbose: bool = False,
     show_image: bool = False,
     dry_run: bool = False,
-) -> dict[str, Any]:
-    """Run the vision pipeline for ``key`` and return the result dict.
+) -> ExtractedDoc:
+    """Extract one document. HEAD-skip is checked before any pipeline import.
 
-    For the simple, non-introspective path this is a thin wrapper over
-    :func:`pipelines.vision_path.run`. Any of ``verbose``, ``dry_run``,
-    ``show_image``, ``provider``, or ``model`` enables the inlined
-    orchestration below so the FR51 verbose sections can be emitted in the
-    canonical order.
+    The HEAD-skip short-circuit fires uniformly — even with ``--dry-run`` or
+    ``--verbose`` — so an already-extracted source key costs exactly one S3
+    HEAD and zero provider tokens. To force re-extraction, delete the
+    analysis object first.
     """
+    analysis_key = _analysis_key_for(key)
+
+    if s3_io.head_analysis(analysis_key):
+        return ExtractedDoc(
+            key=key,
+            skipped=True,
+            analysis_key=analysis_key,
+            doc_type=None,
+        )
+
     needs_inline = bool(verbose or dry_run or show_image or provider or model)
     if not needs_inline:
-        return await vision_path.run(key)
-
-    analysis_key = f"{key}.md"
-
-    if not dry_run and s3_io.head_analysis(analysis_key):
-        return {"analysis_key": analysis_key, "skipped": True, "doc_type": ""}
+        result = await vision_path.run(key)
+        return ExtractedDoc(
+            key=key,
+            skipped=bool(result.get("skipped", False)),
+            analysis_key=str(result["analysis_key"]),
+            doc_type=(str(result["doc_type"]) or None),
+        )
 
     presigned_url = s3_io.get_presigned_url(s3_io.SOURCE_BUCKET, key)
     if show_image:
@@ -102,9 +134,7 @@ async def extract(
         print(md_text)
         _section("5. Cost telemetry")
         model_id = model or "<resolved-by-config>"
-        print(
-            f"cost_usd=0.000 latency_ms={elapsed_ms:.0f} model={model_id}"
-        )
+        print(f"cost_usd=0.000 latency_ms={elapsed_ms:.0f} model={model_id}")
 
     if dry_run:
         if not verbose:
@@ -112,9 +142,31 @@ async def extract(
     else:
         s3_io.write_analysis(analysis_key, md_text)
 
-    return {
-        "analysis_key": analysis_key,
-        "skipped": False,
-        "doc_type": classification.doc_type,
-        "dry_run": dry_run,
-    }
+    return ExtractedDoc(
+        key=key,
+        skipped=False,
+        analysis_key=analysis_key,
+        doc_type=classification.doc_type,
+    )
+
+
+async def extract_batch(
+    keys: list[str], *, max_concurrent: int = DEFAULT_BATCH_CONCURRENCY
+) -> list[ExtractedDoc]:
+    """Extract many documents with bounded concurrency.
+
+    Each key independently HEAD-skips inside :func:`extract`. A semaphore
+    bounds concurrent provider calls so a large batch over a partially
+    extracted prefix doesn't hammer the model APIs — Story 8.5 will tune
+    the bound and add rate-limit retry. Results return in input order.
+    """
+    if max_concurrent <= 0:
+        raise ValueError(f"max_concurrent must be positive, got {max_concurrent}")
+
+    semaphore = asyncio.Semaphore(max_concurrent)
+
+    async def _bounded(k: str) -> ExtractedDoc:
+        async with semaphore:
+            return await extract(k)
+
+    return await asyncio.gather(*(_bounded(k) for k in keys))
