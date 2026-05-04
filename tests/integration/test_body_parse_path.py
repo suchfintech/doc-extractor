@@ -277,3 +277,111 @@ def test_test_module_does_not_import_private_helpers() -> None:
     assert not hasattr(body_parse_path, "_BodyParsePathPrivate")  # sanity
     # And `Frontmatter` is import-able from schemas (bridge sanity).
     assert Frontmatter is not None
+
+
+# ---------------------------------------------------------------------------
+# P5 — body-parse renders through markdown_io.render_to_md (via
+# render_frontmatter_only) so render-side logic propagates.
+#
+# Pre-fix, _reassemble called yaml.safe_dump directly and bypassed Story
+# 7.5's provenance auto-fill — a body-parse repair on a freshly-classified
+# document with empty extractor_version / extraction_timestamp produced
+# YAML with those fields blank, breaking downstream consumers that rely
+# on provenance being populated.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_body_parse_preserves_already_populated_provenance(
+    s3_mock: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 7.5 caller-wins rule: when the existing frontmatter has
+    populated ``extractor_version`` and ``extraction_timestamp``, the
+    body-parse round-trip preserves them — render_to_md's auto-fill is
+    skip-on-non-empty."""
+    # Pin a different fake clock + version to prove auto-fill DIDN'T fire.
+    from doc_extractor import markdown_io
+
+    monkeypatch.setattr(markdown_io, "_now_iso8601", lambda: "9999-01-01T00:00:00Z")
+    # Patching __version__ requires writing to the doc_extractor module attr
+    # since markdown_io re-imports it at autofill time.
+    import doc_extractor
+
+    monkeypatch.setattr(doc_extractor, "__version__", "9.9.9-fake")
+
+    key = "doc-cn-populated-provenance.md"
+    s3_mock[key] = _md(
+        _frontmatter_yaml(
+            jurisdiction="CN",
+            extractor_version="0.1.0",
+            extraction_timestamp="'2026-05-03T19:00:00Z'",
+        ),
+        CN_BODY,
+    )
+
+    await body_parse_path.run(key)
+
+    parsed = _parse_frontmatter(s3_mock[key])
+    assert parsed["extractor_version"] == "0.1.0"
+    assert parsed["extraction_timestamp"] == "2026-05-03T19:00:00Z"
+    # And the fake clock / fake version DID NOT leak in.
+    assert "9.9.9-fake" not in s3_mock[key]
+    assert "9999-01-01" not in s3_mock[key]
+
+
+@pytest.mark.asyncio
+async def test_body_parse_autofills_empty_provenance_via_render_to_md(
+    s3_mock: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 7.5 auto-fill now fires through the body-parse path too.
+    Pre-P5 fix, body-parse called ``yaml.safe_dump`` directly and the
+    auto-fill never ran — a freshly-classified MD with empty provenance
+    came back from body-parse still empty."""
+    from doc_extractor import markdown_io
+
+    monkeypatch.setattr(markdown_io, "_now_iso8601", lambda: "2026-05-04T12:00:00Z")
+    import doc_extractor
+
+    monkeypatch.setattr(doc_extractor, "__version__", "0.1.0-test")
+
+    key = "doc-cn-empty-provenance.md"
+    s3_mock[key] = _md(
+        _frontmatter_yaml(
+            jurisdiction="CN",
+            extractor_version="''",
+            extraction_timestamp="''",
+        ),
+        CN_BODY,
+    )
+
+    await body_parse_path.run(key)
+
+    parsed = _parse_frontmatter(s3_mock[key])
+    assert parsed["extractor_version"] == "0.1.0-test"
+    assert parsed["extraction_timestamp"] == "2026-05-04T12:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_body_parse_round_trip_uses_markdown_io_fence_format(
+    s3_mock: dict[str, str],
+) -> None:
+    """The reassembled MD must follow the same `---\\n<yaml>---\\n\\n<body>`
+    shape as ``markdown_io.render_to_md`` — the closing fence is followed
+    by exactly one blank line before the body. Pre-fix, manual
+    ``yaml.safe_dump`` + string concat produced the same bytes by
+    coincidence; routing through ``render_frontmatter_only`` makes that
+    contract explicit and survives future render-side changes."""
+    key = "doc-cn-fence-shape.md"
+    s3_mock[key] = _md(_frontmatter_yaml(jurisdiction="CN"), CN_BODY)
+
+    await body_parse_path.run(key)
+
+    new_md = s3_mock[key]
+    assert new_md.startswith("---\n")
+    # Exactly one closing fence + blank line between frontmatter and body.
+    assert "\n---\n\n" in new_md
+    # And the body is intact byte-for-byte after the blank-line boundary.
+    body = new_md.split("\n---\n", 1)[1]
+    assert body == CN_BODY

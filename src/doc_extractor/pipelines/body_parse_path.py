@@ -26,6 +26,7 @@ from doc_extractor import s3_io
 from doc_extractor.body_parse.chinese_labels import parse_chinese
 from doc_extractor.body_parse.nz_narrative import parse_nz
 from doc_extractor.exceptions import BodyParseUnmatchedError
+from doc_extractor.markdown_io import render_frontmatter_only
 from doc_extractor.schemas import PaymentReceipt
 
 _OPENING_FENCE = "---\n"
@@ -94,9 +95,12 @@ def _merge_non_empty(existing: dict[str, Any], parsed: PaymentReceipt) -> dict[s
     return merged
 
 
-def _reassemble(merged: dict[str, Any], body_after_fence: str) -> str:
-    yaml_block = yaml.safe_dump(merged, allow_unicode=True, sort_keys=False)
-    return f"{_OPENING_FENCE}{yaml_block}---\n{body_after_fence}"
+def _reassemble(typed: PaymentReceipt, body_after_fence: str) -> str:
+    """Render the typed receipt's frontmatter via ``markdown_io`` so any
+    render-side logic (Story 7.5 provenance auto-fill, future schema
+    transforms) propagates here too. The body markdown after the closing
+    fence is concatenated verbatim — Story 3.6 byte-identical invariant."""
+    return f"{render_frontmatter_only(typed)}{body_after_fence}"
 
 
 async def run(source_key: str) -> dict[str, Any]:
@@ -120,8 +124,14 @@ async def run(source_key: str) -> dict[str, Any]:
         name for name in _PR_FIELDS if getattr(parsed, name) and existing.get(name, "") != getattr(parsed, name)
     )
 
+    # P5 — re-validate the merged dict into a typed PaymentReceipt, then
+    # render via ``render_frontmatter_only``. The YAML-load pre-merge
+    # produces empty-string fields as Python ``None`` for keys whose YAML
+    # value was ``''``, but Pydantic's ``Frontmatter`` validator already
+    # coerces ``None → ""`` for string fields, so the round-trip is clean.
     merged = _merge_non_empty(existing, parsed)
-    new_md = _reassemble(merged, body_after)
+    typed = PaymentReceipt.model_validate(merged)
+    new_md = _reassemble(typed, body_after)
     s3_io.write_analysis(source_key, new_md)
 
     return {

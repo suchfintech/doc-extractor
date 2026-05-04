@@ -26,11 +26,24 @@ from doc_extractor.schemas import PaymentReceipt
 # sorts longest-first to prevent a shorter variant (``付款方``) from prematurely
 # matching a longer one (``付款方银行``).
 
-_DEBIT_NAME_LABELS = ("付款人", "付款户名", "付款方", "汇款人", "汇款方")
+# P6 (code review Round 2) — `付款人姓名` / `收款人姓名` are common labels on
+# real CN receipts (literally "payer name" / "payee name"). The longest-
+# first sort handles disambiguation: when the body has `付款人姓名: 张三`,
+# the regex tries `付款人姓名` first (4 chars) and matches; the shorter
+# `付款人` doesn't spuriously match because the colon-anchor `[\s\*]*[:：]`
+# requires a colon immediately after the label, and `姓` blocks that.
+_DEBIT_NAME_LABELS = (
+    "付款人",
+    "付款户名",
+    "付款方",
+    "付款人姓名",
+    "汇款人",
+    "汇款方",
+)
 _DEBIT_NUMBER_LABELS = ("付款卡号", "付款账号", "付款账户", "付款账户号码")
 _DEBIT_BANK_LABELS = ("付款行", "付款银行", "付款方银行", "付款方开户行")
 
-_CREDIT_NAME_LABELS = ("收款人", "收款户名", "收款方")
+_CREDIT_NAME_LABELS = ("收款人", "收款户名", "收款方", "收款人姓名")
 _CREDIT_NUMBER_LABELS = ("收款卡号", "收款账号", "收款账户", "收款账户号码")
 _CREDIT_BANK_LABELS = ("收款行", "收款银行", "收款方银行", "收款方开户行")
 

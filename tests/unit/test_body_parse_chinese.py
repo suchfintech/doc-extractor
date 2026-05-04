@@ -17,7 +17,10 @@ from doc_extractor.body_parse.chinese_labels import parse_chinese
 
 @pytest.mark.parametrize(
     "label",
-    ["付款人", "付款户名", "付款方", "汇款人", "汇款方"],
+    # `付款人姓名` added in P6 (code review Round 2) — common on real CN
+    # receipts; must coexist with the shorter `付款人` (longest-first sort
+    # plus colon anchor handles disambiguation, exercised below).
+    ["付款人", "付款户名", "付款方", "付款人姓名", "汇款人", "汇款方"],
 )
 def test_debit_name_variants(label: str) -> None:
     body = f"{label}: 张三\n"
@@ -50,7 +53,12 @@ def test_debit_bank_variants(label: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("label", ["收款人", "收款户名", "收款方"])
+@pytest.mark.parametrize(
+    "label",
+    # `收款人姓名` added in P6 (code review Round 2) — symmetric with the
+    # debit-side `付款人姓名` addition.
+    ["收款人", "收款户名", "收款方", "收款人姓名"],
+)
 def test_credit_name_variants(label: str) -> None:
     body = f"{label}: 李四\n"
     result = parse_chinese(body)
@@ -213,6 +221,32 @@ def test_only_bank_label_present_does_not_populate_name() -> None:
     result = parse_chinese(body)
     assert result.receipt_debit_account_name == ""
     assert result.receipt_debit_bank_name == "中国工商银行"
+
+
+# P6 — disambiguation: when only the longer `付款人姓名` label is present, the
+# shorter `付款人` must NOT spuriously match (the colon anchor blocks it
+# because `姓` follows `付款人` instead of a colon). Symmetric for credit.
+
+
+def test_payer_name_label_does_not_collide_with_short_payer_label() -> None:
+    body = "付款人姓名: 张三\n"
+    result = parse_chinese(body)
+    assert result.receipt_debit_account_name == "张三"
+
+
+def test_payee_name_label_does_not_collide_with_short_payee_label() -> None:
+    body = "收款人姓名: 李四\n"
+    result = parse_chinese(body)
+    assert result.receipt_credit_account_name == "李四"
+
+
+def test_long_and_short_payer_labels_coexist_first_match_wins() -> None:
+    """When both `付款人姓名` (longer, listed first in the body) and `付款人`
+    (shorter, listed second) appear, the first match in left-to-right scan
+    wins. Confirms the longest-first sort doesn't silently swallow either."""
+    body = "付款人姓名: 张三\n付款人: 王五\n"
+    result = parse_chinese(body)
+    assert result.receipt_debit_account_name == "张三"
 
 
 # ---------------------------------------------------------------------------

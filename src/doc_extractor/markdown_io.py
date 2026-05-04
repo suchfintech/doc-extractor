@@ -90,6 +90,30 @@ _SCHEMA_BY_DOC_TYPE: dict[str, type[Frontmatter]] = {
 }
 
 
+def render_frontmatter_only(frontmatter: Frontmatter) -> str:
+    """Render just the YAML frontmatter block, including both fences.
+
+    Returns ``---\\n<yaml>---\\n`` (no trailing blank line). The body-parse
+    pipeline (Story 3.6) uses this to reconstruct ``frontmatter + existing
+    body`` byte-identically when the body is preserved unchanged. For the
+    full render that includes the standard blank line after the closing
+    fence, use :func:`render_to_md`.
+
+    All provenance auto-fill, future deprecated-alias mapping, and any
+    other render-side logic lives here so both the full-render path and
+    the body-parse repair path stay in lockstep — P5 (code review Round
+    2) closed the body-parse-bypasses-render_to_md gap.
+    """
+    data = frontmatter.model_dump()
+    _autofill_provenance(data)
+    body = yaml.safe_dump(
+        data,
+        allow_unicode=True,
+        sort_keys=False,
+    )
+    return f"{_FENCE}\n{body}{_FENCE}\n"
+
+
 def render_to_md(frontmatter: Frontmatter) -> str:
     """Render a Frontmatter (or subclass) to YAML-frontmatter Markdown.
 
@@ -101,14 +125,7 @@ def render_to_md(frontmatter: Frontmatter) -> str:
     ``extraction_model``, ``prompt_version``) are populated by
     ``pipelines.vision_path`` before render.
     """
-    data = frontmatter.model_dump()
-    _autofill_provenance(data)
-    body = yaml.safe_dump(
-        data,
-        allow_unicode=True,
-        sort_keys=False,
-    )
-    return f"{_FENCE}\n{body}{_FENCE}\n\n"
+    return f"{render_frontmatter_only(frontmatter)}\n"
 
 
 def parse_md(text: str) -> Frontmatter:
