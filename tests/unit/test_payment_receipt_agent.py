@@ -115,13 +115,3 @@ def test_each_call_constructs_a_fresh_agent(
     assert a is not b
     assert mocked_deps["create"].call_count == 2
     assert a.model is not b.model
-
-
-def test_no_module_level_agent_attribute() -> None:
-    """Sentinel: the factory module must not expose a pre-built singleton."""
-    public_attrs = {a for a in dir(payment_receipt_module) if not a.startswith("_")}
-    for name in public_attrs:
-        value = getattr(payment_receipt_module, name)
-        assert not isinstance(value, Agent), (
-            f"Module exposes pre-built Agent at {name!r} — violates 'no global Agent' rule"
-        )

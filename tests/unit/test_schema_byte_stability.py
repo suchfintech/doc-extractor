@@ -413,6 +413,37 @@ def test_tax_residency_preserves_tin_formats_verbatim() -> None:
     assert "tin: 123-456-789" in dumped
 
 
+@pytest.mark.parametrize(
+    "jurisdiction,tin",
+    [
+        ("New Zealand", "123-456-789"),       # NZ IRD: 9 digits, hyphen-separated
+        ("United States", "123-45-6789"),     # US SSN: 9 digits, AAA-GG-SSSS
+        ("Hong Kong", "A1234567"),            # HK: HKID-derived alphanumeric
+        ("Singapore", "S1234567A"),           # SG: NRIC/FIN with check letter
+        ("China", "91110108MA01ABCD12"),      # CN: 18-char USCC
+    ],
+    ids=["NZ_IRD", "US_SSN", "HK_HKID", "SG_NRIC", "CN_USCC"],
+)
+def test_tax_residency_tin_round_trips_per_jurisdiction(
+    jurisdiction: str, tin: str
+) -> None:
+    """Per-jurisdiction TIN format preservation: a TIN written into the schema
+    must survive ``model_dump`` → YAML → ``model_validate`` byte-equal. Any
+    string-coercion regression that strips hyphens / whitespace / leading
+    zeros would break downstream consumers that match on the printed form."""
+    tr = TaxResidency(
+        holder_name="Test Holder",
+        tax_jurisdiction=jurisdiction,
+        tin=tin,
+        residency_status="resident",
+    )
+    payload = yaml.safe_dump(tr.model_dump(), allow_unicode=True, sort_keys=False)
+    assert f"tin: {tin}" in payload, f"TIN {tin!r} did not survive YAML round-trip"
+    reloaded = TaxResidency.model_validate(yaml.safe_load(payload))
+    assert reloaded.tin == tin
+    assert reloaded.tax_jurisdiction == jurisdiction
+
+
 def test_verifier_audit_overall_pinned_by_validator() -> None:
     """Sentinel: the ``VerifierAudit.overall`` validator pins the field to
     a deterministic rollup of ``field_audits`` (any disagree → fail). The

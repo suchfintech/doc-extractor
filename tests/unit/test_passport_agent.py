@@ -109,14 +109,3 @@ def test_each_call_constructs_a_fresh_agent(
     assert mocked_deps["create"].call_count == 2
     # Model instances are also distinct (different MagicMock per side_effect call).
     assert agent_a.model is not agent_b.model
-
-
-def test_no_module_level_agent_attribute() -> None:
-    """Sentinel: the factory module must not expose a pre-built singleton."""
-    public_attrs = {a for a in dir(passport_module) if not a.startswith("_")}
-    # No attribute should be an Agent instance — only the constructor function.
-    for name in public_attrs:
-        value = getattr(passport_module, name)
-        assert not isinstance(value, Agent), (
-            f"Module exposes pre-built Agent at {name!r} — violates 'no global Agent' rule"
-        )

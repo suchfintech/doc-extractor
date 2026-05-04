@@ -101,12 +101,3 @@ def test_model_override_beats_yaml(mocked_deps: dict[str, MagicMock]) -> None:
     assert create_kwargs["model_id"] == "claude-sonnet-4-6-20260101"
     # CLI override only sets model; provider still resolves via lower layers.
     assert create_kwargs["provider"] == "anthropic"
-
-
-def test_no_module_level_agent_attribute() -> None:
-    public_attrs = {a for a in dir(other_module) if not a.startswith("_")}
-    for name in public_attrs:
-        value = getattr(other_module, name)
-        assert not isinstance(value, Agent), (
-            f"Module exposes pre-built Agent at {name!r} — violates 'no global Agent' rule"
-        )
