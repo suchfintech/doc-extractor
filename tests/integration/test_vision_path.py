@@ -1,8 +1,8 @@
-"""Integration test for the v1 Passport-only vision pipeline."""
+"""Integration test for the vision pipeline (FACTORIES dispatch + verifier gate)."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, get_args
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -10,8 +10,11 @@ from agno.agent import Agent
 
 from doc_extractor import s3_io
 from doc_extractor.pipelines import vision_path
-from doc_extractor.schemas.classification import Classification
+from doc_extractor.schemas.bank_statement import BankStatement
+from doc_extractor.schemas.classification import DOC_TYPES, Classification
+from doc_extractor.schemas.company_extract import CompanyExtract
 from doc_extractor.schemas.ids import DriverLicence, NationalID, Passport, Visa
+from doc_extractor.schemas.other import Other
 from doc_extractor.schemas.payment_receipt import PaymentReceipt
 from doc_extractor.schemas.verifier import VerifierAudit
 
@@ -47,6 +50,18 @@ def _make_async_agent(content: Any) -> tuple[Agent, AsyncMock]:
     agent = MagicMock(spec=Agent)
     agent.arun = arun
     return agent, arun
+
+
+def _patch_factory(
+    monkeypatch: pytest.MonkeyPatch, doc_type: str, agent: Agent
+) -> None:
+    """P2 — replace the FACTORIES entry for ``doc_type`` with a thunk
+    returning ``agent``. ``setitem`` reverts on test teardown.
+
+    Replaces the previous pattern of patching ``vision_path.create_X_agent``
+    by name; vision_path no longer imports those symbols directly — it
+    dispatches via the ``FACTORIES`` registry."""
+    monkeypatch.setitem(vision_path.FACTORIES, doc_type, lambda: agent)
 
 
 @pytest.fixture
@@ -92,9 +107,7 @@ async def test_happy_path_writes_passport_markdown(
     monkeypatch.setattr(
         vision_path, "create_classifier_agent", lambda: classifier_agent
     )
-    monkeypatch.setattr(
-        vision_path, "create_passport_agent", lambda: passport_agent
-    )
+    _patch_factory(monkeypatch, "Passport", passport_agent)
     monkeypatch.setattr(
         vision_path, "create_verifier_agent", lambda: verifier_agent
     )
@@ -137,9 +150,6 @@ async def test_head_skip_short_circuits_before_provider(
     monkeypatch.setattr(
         vision_path, "create_classifier_agent", lambda: classifier_agent
     )
-    monkeypatch.setattr(
-        vision_path, "create_passport_agent", lambda: MagicMock(spec=Agent)
-    )
 
     result = await vision_path.run(SOURCE_KEY)
 
@@ -155,33 +165,6 @@ async def test_head_skip_short_circuits_before_provider(
     patched_io["presign"].assert_not_called()
     patched_io["write"].assert_not_called()
     assert classifier_arun.await_count == 0
-
-
-@pytest.mark.asyncio
-async def test_unimplemented_doc_type_raises_not_implemented(
-    patched_io: dict[str, MagicMock], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Story 4.4 closed the ID-document family, so ``DriverLicence`` now
-    routes to a real specialist. The remaining Epic-5 doc types (e.g.
-    ``BankStatement``) still raise ``NotImplementedError`` until their
-    specialists land."""
-    classifier_agent, _ = _make_async_agent(
-        Classification(doc_type="BankStatement", jurisdiction="NZ")
-    )
-    passport_agent, passport_arun = _make_async_agent(content=None)
-
-    monkeypatch.setattr(
-        vision_path, "create_classifier_agent", lambda: classifier_agent
-    )
-    monkeypatch.setattr(
-        vision_path, "create_passport_agent", lambda: passport_agent
-    )
-
-    with pytest.raises(NotImplementedError, match="BankStatement"):
-        await vision_path.run(SOURCE_KEY)
-
-    assert passport_arun.await_count == 0
-    patched_io["write"].assert_not_called()
 
 
 PDF_SOURCE_KEY = "passports/sample-001.pdf"
@@ -212,9 +195,7 @@ async def test_pdf_source_routes_through_pdf_to_images(
     monkeypatch.setattr(
         vision_path, "create_classifier_agent", lambda: classifier_agent
     )
-    monkeypatch.setattr(
-        vision_path, "create_passport_agent", lambda: passport_agent
-    )
+    _patch_factory(monkeypatch, "Passport", passport_agent)
     monkeypatch.setattr(
         vision_path, "create_verifier_agent", lambda: verifier_agent
     )
@@ -290,9 +271,7 @@ async def test_verifier_runs_when_classification_is_payment_receipt(
     verifier_agent, verifier_arun = _make_async_agent(_verifier_audit_fixture("pass"))
 
     monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
-    monkeypatch.setattr(
-        vision_path, "create_payment_receipt_agent", lambda: pr_agent
-    )
+    _patch_factory(monkeypatch, "PaymentReceipt", pr_agent)
     monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
 
     result = await vision_path.run(PR_SOURCE_KEY)
@@ -328,7 +307,7 @@ async def test_verifier_fail_verdict_propagates_to_result_dict(
     verifier_agent, _ = _make_async_agent(_verifier_audit_fixture("fail"))
 
     monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
-    monkeypatch.setattr(vision_path, "create_payment_receipt_agent", lambda: pr_agent)
+    _patch_factory(monkeypatch, "PaymentReceipt", pr_agent)
     monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
 
     result = await vision_path.run(PR_SOURCE_KEY)
@@ -350,7 +329,7 @@ async def test_verifier_runs_on_passport_classification(
     verifier_agent, verifier_arun = _make_async_agent(_verifier_audit_fixture())
 
     monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
-    monkeypatch.setattr(vision_path, "create_passport_agent", lambda: passport_agent)
+    _patch_factory(monkeypatch, "Passport", passport_agent)
     monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
 
     result = await vision_path.run(SOURCE_KEY)
@@ -365,27 +344,6 @@ async def test_verifier_runs_on_passport_classification(
     assert "passport_number" in verifier_input
     assert "E12345678" in verifier_input
     assert verifier_arun.call_args.kwargs["images"]
-
-
-@pytest.mark.asyncio
-async def test_verifier_not_called_when_classification_is_other(
-    patched_io: dict[str, MagicMock], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """`Other` raises NotImplementedError before any specialist runs — the
-    verifier must NOT be constructed or called along that path either."""
-    classifier_agent, _ = _make_async_agent(
-        Classification(doc_type="Other", jurisdiction="NZ")
-    )
-    verifier_agent, verifier_arun = _make_async_agent(_verifier_audit_fixture())
-
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
-    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
-
-    with pytest.raises(NotImplementedError, match="Other"):
-        await vision_path.run(SOURCE_KEY)
-
-    assert verifier_arun.await_count == 0
-    patched_io["write"].assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -419,7 +377,7 @@ async def test_disagreement_written_when_verifier_overall_is_fail(
     verifier_agent, _ = _make_async_agent(_verifier_audit_fixture("fail"))
 
     monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
-    monkeypatch.setattr(vision_path, "create_payment_receipt_agent", lambda: pr_agent)
+    _patch_factory(monkeypatch, "PaymentReceipt", pr_agent)
     monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
 
     result = await vision_path.run(PR_SOURCE_KEY)
@@ -450,7 +408,7 @@ async def test_disagreement_NOT_written_when_verifier_overall_is_pass(
     verifier_agent, _ = _make_async_agent(_verifier_audit_fixture("pass"))
 
     monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
-    monkeypatch.setattr(vision_path, "create_payment_receipt_agent", lambda: pr_agent)
+    _patch_factory(monkeypatch, "PaymentReceipt", pr_agent)
     monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
 
     result = await vision_path.run(PR_SOURCE_KEY)
@@ -474,7 +432,7 @@ async def test_disagreement_NOT_written_when_verifier_overall_is_uncertain(
     verifier_agent, _ = _make_async_agent(_verifier_audit_fixture("uncertain"))
 
     monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
-    monkeypatch.setattr(vision_path, "create_payment_receipt_agent", lambda: pr_agent)
+    _patch_factory(monkeypatch, "PaymentReceipt", pr_agent)
     monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
 
     result = await vision_path.run(PR_SOURCE_KEY)
@@ -500,7 +458,7 @@ async def test_disagreement_NOT_written_for_passport_when_verifier_passes(
     verifier_agent, _ = _make_async_agent(_verifier_audit_fixture("pass"))
 
     monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
-    monkeypatch.setattr(vision_path, "create_passport_agent", lambda: passport_agent)
+    _patch_factory(monkeypatch, "Passport", passport_agent)
     monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
 
     result = await vision_path.run(SOURCE_KEY)
@@ -662,7 +620,7 @@ async def test_verifier_runs_on_driver_licence_classification(
     verifier_agent, verifier_arun = _make_async_agent(_verifier_audit_fixture("pass"))
 
     monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
-    monkeypatch.setattr(vision_path, "create_driver_licence_agent", lambda: dl_agent)
+    _patch_factory(monkeypatch, "DriverLicence", dl_agent)
     monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
 
     result = await vision_path.run(SOURCE_KEY)
@@ -689,7 +647,7 @@ async def test_verifier_runs_on_national_id_classification(
     verifier_agent, verifier_arun = _make_async_agent(_verifier_audit_fixture("pass"))
 
     monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
-    monkeypatch.setattr(vision_path, "create_national_id_agent", lambda: nid_agent)
+    _patch_factory(monkeypatch, "NationalID", nid_agent)
     monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
 
     result = await vision_path.run(SOURCE_KEY)
@@ -716,7 +674,7 @@ async def test_verifier_runs_on_visa_classification(
     verifier_agent, verifier_arun = _make_async_agent(_verifier_audit_fixture("pass"))
 
     monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
-    monkeypatch.setattr(vision_path, "create_visa_agent", lambda: visa_agent)
+    _patch_factory(monkeypatch, "Visa", visa_agent)
     monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
 
     result = await vision_path.run(SOURCE_KEY)
@@ -746,7 +704,7 @@ async def test_verifier_failure_on_driver_licence_writes_disagreement(
     verifier_agent, _ = _make_async_agent(_verifier_audit_fixture("fail"))
 
     monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
-    monkeypatch.setattr(vision_path, "create_driver_licence_agent", lambda: dl_agent)
+    _patch_factory(monkeypatch, "DriverLicence", dl_agent)
     monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
 
     result = await vision_path.run(SOURCE_KEY)
@@ -811,7 +769,7 @@ async def test_raw_responses_propagate_to_record_disagreement_on_fail(
     verifier_agent.run_response = ver_run_response
 
     monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
-    monkeypatch.setattr(vision_path, "create_payment_receipt_agent", lambda: pr_agent)
+    _patch_factory(monkeypatch, "PaymentReceipt", pr_agent)
     monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
 
     await vision_path.run(PR_SOURCE_KEY)
@@ -833,3 +791,175 @@ async def test_raw_responses_propagate_to_record_disagreement_on_fail(
     assert ver_text == "verifier raw text — disagree on credit"
     assert ver_meta["provider"] == "anthropic"
     assert ver_meta["latency_ms"] == 8.4
+
+
+# ---------------------------------------------------------------------------
+# Code review Round 1 (P2) — FACTORIES dispatch covers all 15 doc-types.
+#
+# Before the P2 fix, vision_path imported ``create_passport_agent`` (and a
+# handful of others) directly and raised ``NotImplementedError`` for any
+# non-Passport classification — rendering the Story 4.5 ``FACTORIES``
+# table dead code in production. The tests below cover the new dispatch
+# for non-Passport types and the verifier-skip path for non-gated types.
+# ---------------------------------------------------------------------------
+
+
+def _bank_statement_fixture() -> BankStatement:
+    return BankStatement(
+        doc_type="BankStatement",
+        jurisdiction="NZ",
+        bank_name="ANZ Bank New Zealand Limited",
+        account_holder_name="Acme Holdings Limited",
+        account_number="02-0248-0242329-02",
+        currency="NZD",
+        statement_period_start="2026-04-01",
+        statement_period_end="2026-04-30",
+        closing_balance="NZD 12,345.67",
+    )
+
+
+def _company_extract_fixture() -> CompanyExtract:
+    return CompanyExtract(
+        doc_type="CompanyExtract",
+        jurisdiction="NZ",
+        company_name="Acme Holdings Limited",
+        registration_number="1234567",
+        incorporation_date="2018-04-15",
+        directors=["Alice Wong", "Bob Chen"],
+        shareholders=["Acme Group Ltd"],
+    )
+
+
+def _other_fixture() -> Other:
+    return Other(
+        doc_type="Other",
+        jurisdiction="NZ",
+        description="Handwritten note of unclear provenance",
+        extracted_text="Please forward to processing.",
+        notes="model uncertain — flagging for human review",
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatches_bank_statement_via_factories_no_verifier(
+    patched_io: dict[str, MagicMock], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BankStatement is non-gated: the FACTORIES dispatch reaches its
+    specialist, the analysis MD lands, but the verifier is NOT
+    constructed or called."""
+    classifier_agent, _ = _make_async_agent(
+        Classification(doc_type="BankStatement", jurisdiction="NZ")
+    )
+    bs_agent, bs_arun = _make_async_agent(_bank_statement_fixture())
+    # Bind a verifier mock so we can assert it was NEVER called.
+    verifier_agent, verifier_arun = _make_async_agent(_verifier_audit_fixture("pass"))
+
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    _patch_factory(monkeypatch, "BankStatement", bs_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+
+    result = await vision_path.run(SOURCE_KEY)
+
+    assert result["doc_type"] == "BankStatement"
+    assert result["verifier_audit"] is None
+    assert result["disagreement_key"] is None
+    assert bs_arun.await_count == 1
+    assert verifier_arun.await_count == 0
+    patched_io["write"].assert_called_once()
+    body = patched_io["write"].call_args.args[1]
+    assert "doc_type: BankStatement" in body
+    assert "ANZ Bank New Zealand Limited" in body
+    assert "02-0248-0242329-02" in body
+
+
+@pytest.mark.asyncio
+async def test_dispatches_company_extract_via_factories_no_verifier(
+    patched_io: dict[str, MagicMock], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CompanyExtract — first non-gated test that exercises a list[str]
+    schema field through the dispatch path."""
+    classifier_agent, _ = _make_async_agent(
+        Classification(doc_type="CompanyExtract", jurisdiction="NZ")
+    )
+    ce_agent, ce_arun = _make_async_agent(_company_extract_fixture())
+    verifier_agent, verifier_arun = _make_async_agent(_verifier_audit_fixture("pass"))
+
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    _patch_factory(monkeypatch, "CompanyExtract", ce_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+
+    result = await vision_path.run(SOURCE_KEY)
+
+    assert result["doc_type"] == "CompanyExtract"
+    assert result["verifier_audit"] is None
+    assert ce_arun.await_count == 1
+    assert verifier_arun.await_count == 0
+    body = patched_io["write"].call_args.args[1]
+    assert "doc_type: CompanyExtract" in body
+    assert "Alice Wong" in body
+    assert "Acme Group Ltd" in body
+
+
+@pytest.mark.asyncio
+async def test_dispatches_other_via_factories_no_verifier(
+    patched_io: dict[str, MagicMock], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Story 5.5 — ``Other`` is the catch-all specialist. Before P2 it
+    raised ``NotImplementedError``; now it dispatches via FACTORIES, the
+    analysis MD lands, and the verifier is NOT called (Other is outside
+    the safety-critical gated set)."""
+    classifier_agent, _ = _make_async_agent(
+        Classification(doc_type="Other", jurisdiction="NZ")
+    )
+    other_agent, other_arun = _make_async_agent(_other_fixture())
+    verifier_agent, verifier_arun = _make_async_agent(_verifier_audit_fixture("pass"))
+
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    _patch_factory(monkeypatch, "Other", other_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+
+    result = await vision_path.run(SOURCE_KEY)
+
+    assert result["doc_type"] == "Other"
+    assert result["verifier_audit"] is None
+    assert result["disagreement_key"] is None
+    assert other_arun.await_count == 1
+    assert verifier_arun.await_count == 0
+    patched_io["write"].assert_called_once()
+    body = patched_io["write"].call_args.args[1]
+    assert "doc_type: Other" in body
+    assert "Handwritten note of unclear provenance" in body
+
+
+def test_specialist_meta_covers_all_15_doc_types() -> None:
+    """Drift sentinel: ``_SPECIALIST_META`` MUST cover every ``DOC_TYPES``
+    literal. A missing entry would surface at runtime as a ``KeyError`` on
+    the very first request that classifies into the new type — failing
+    here keeps the gate tight at PR time instead.
+    """
+    expected = set(get_args(DOC_TYPES))
+    actual = set(vision_path._SPECIALIST_META.keys())
+    missing = expected - actual
+    extra = actual - expected
+    assert not missing, f"_SPECIALIST_META missing entries: {sorted(missing)}"
+    assert not extra, f"_SPECIALIST_META has stale entries: {sorted(extra)}"
+
+
+def test_factories_and_specialist_meta_keys_align() -> None:
+    """``FACTORIES`` and ``_SPECIALIST_META`` are looked up with the same
+    ``classification.doc_type`` key in ``vision_path.run`` — their key
+    sets must match or one of the two lookups raises ``KeyError`` at
+    runtime."""
+    assert set(vision_path.FACTORIES.keys()) == set(
+        vision_path._SPECIALIST_META.keys()
+    )
+
+
+def test_verifier_gated_types_is_subset_of_specialist_meta() -> None:
+    """The verifier gate operates on ``classification.doc_type`` — every
+    name in the gated set must be a real specialist, otherwise a typo'd
+    entry silently never matches and the verifier never runs for that
+    doc-type in production."""
+    assert vision_path._VERIFIER_GATED_TYPES.issubset(
+        set(vision_path._SPECIALIST_META.keys())
+    )
