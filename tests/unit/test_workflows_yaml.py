@@ -3,9 +3,7 @@
 Asserts ``ci.yml`` and ``eval.yml`` parse as YAML, expose the gates the
 project relies on (ruff / mypy / pytest / cost-ceiling), and that
 ``eval.yml`` keeps the path-filter trigger glob set the maintainers
-agreed on. A sentinel test fires when ``scripts/verify_canonical.py``
-finally lands (Story 2.7) so the stub `if [ -f ... ]` guard in
-``ci.yml`` doesn't go stale.
+agreed on.
 """
 
 from __future__ import annotations
@@ -13,13 +11,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, cast  # noqa: F401  — `cast` retained for the typed `_job_steps` return
 
-import pytest
 import yaml  # type: ignore[import-untyped]
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 EVAL_PATH = REPO_ROOT / ".github" / "workflows" / "eval.yml"
-VERIFY_CANONICAL_PATH = REPO_ROOT / "scripts" / "verify_canonical.py"
 
 REQUIRED_CI_STEP_NAMES: tuple[str, ...] = (
     "Ruff check",
@@ -125,23 +121,3 @@ def test_eval_yaml_exposes_eval_job() -> None:
     # green during the transition.
     assert any("Install" in n for n in step_names)
     assert any(s.get("uses", "").startswith("actions/checkout") for s in steps)
-
-
-def test_verify_canonical_stub_sentinel() -> None:
-    """When Story 2.7 ships ``scripts/verify_canonical.py``, the
-    ``if [ -f scripts/verify_canonical.py ]`` guard in ``ci.yml`` must
-    be replaced with a plain invocation. This test fires a clear failure
-    on that day so the stub doesn't outlive its purpose.
-    """
-    if not VERIFY_CANONICAL_PATH.exists():
-        # Story 2.7 hasn't shipped yet — stub guard remains correct.
-        return
-
-    ci_text = CI_PATH.read_text(encoding="utf-8")
-    pytest.fail(
-        "scripts/verify_canonical.py now exists (Story 2.7 shipped). "
-        "Replace the `if [ -f scripts/verify_canonical.py ]` guard in "
-        f"{CI_PATH.relative_to(REPO_ROOT)} with a direct invocation, then "
-        "delete this sentinel.\n"
-        f"Stub still in ci.yml? {('verify_canonical.py' in ci_text)}"
-    )
