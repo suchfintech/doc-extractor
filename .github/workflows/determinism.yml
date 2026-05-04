@@ -1,0 +1,38 @@
+name: Determinism nightly
+
+# Story 2.8 — gated nightly run that exercises the real Anthropic provider
+# against a canonical Passport image twice and asserts byte-equal output.
+# Kept off the per-commit CI workflow to control cost (one provider call
+# per run is non-trivial; per-PR runs would be wasteful). Triggers:
+#
+# * Cron — 14:00 UTC (≈ 02:00 NZ-local) every night.
+# * Manual — ``workflow_dispatch`` for ad-hoc verification (e.g., after a
+#   provider model upgrade or a prompt rewrite).
+
+on:
+  schedule:
+    - cron: '0 14 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  determinism:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install uv
+        run: pip install uv
+      - name: Install dependencies
+        run: uv venv .venv --python 3.12 && uv pip install --python .venv/bin/python -e ".[dev]"
+      - name: Run determinism test
+        env:
+          RUN_DETERMINISM: '1'
+          DETERMINISM_SOURCE_KEY_A: ${{ secrets.DETERMINISM_SOURCE_KEY_A }}
+          DETERMINISM_SOURCE_KEY_B: ${{ secrets.DETERMINISM_SOURCE_KEY_B }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ap-southeast-2
+        run: .venv/bin/python -m pytest tests/canonical/test_determinism.py -v
