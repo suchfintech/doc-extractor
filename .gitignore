@@ -17,3 +17,9 @@ samples/
 
 # Eval scorecards (machine-generated per-run)
 tests/scorecards/*.json
+
+# Golden-corpus drafts produced by scripts/seed_golden_corpus.py — these
+# contain real customer PII pulled from legacy s3://golden-mountain-analysis
+# extractions and must be hand-redacted by Yang before promotion to
+# tests/golden/<doc_type>/. Drafts stay local to the dev machine.
+.local/
