@@ -102,3 +102,26 @@ def test_create_classifier_agent_uses_haiku_per_yaml(
 def test_classifier_module_exports_create_function() -> None:
     """Sentinel: the public surface stays callable."""
     assert callable(classifier_module.create_classifier_agent)
+
+
+def test_provider_override_beats_yaml(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P15 — classifier picked up the same ``provider``/``model`` plumbing
+    as the 15 specialists so per-invocation overrides work uniformly."""
+    _, calls = _patch_factory(monkeypatch)
+
+    create_classifier_agent(provider="openai")
+
+    assert calls[0]["provider"] == "openai"
+    # Provider override leaves model resolution to lower layers (YAML/fallback).
+    assert "haiku" in calls[0]["model_id"].lower()
+
+
+def test_model_override_beats_yaml(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P15 — ``--model`` override on the classifier beats the YAML default."""
+    _, calls = _patch_factory(monkeypatch)
+
+    create_classifier_agent(model="claude-sonnet-4-6-20260101")
+
+    assert calls[0]["model_id"] == "claude-sonnet-4-6-20260101"
+    # Model override leaves provider to lower layers (YAML/fallback).
+    assert calls[0]["provider"] == "anthropic"

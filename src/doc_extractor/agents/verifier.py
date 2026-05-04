@@ -15,16 +15,20 @@ from __future__ import annotations
 from agno.agent import Agent
 
 from doc_extractor.agents.factory import VisionModelFactory
-from doc_extractor.config.precedence import resolve_agent_config
+from doc_extractor.config.precedence import build_cli_overrides, resolve_agent_config
 from doc_extractor.prompts.loader import load_prompt
 from doc_extractor.schemas.verifier import VerifierAudit
 
 AGENT_NAME = "verifier"
 
 
-def create_verifier_agent(provider: str | None = None) -> Agent:
-    cli_overrides = {"provider": provider} if provider else None
-    cfg = resolve_agent_config(AGENT_NAME, cli_overrides=cli_overrides)
+def create_verifier_agent(
+    provider: str | None = None, model: str | None = None
+) -> Agent:
+    cfg = resolve_agent_config(
+        AGENT_NAME,
+        cli_overrides=build_cli_overrides(provider=provider, model=model),
+    )
     prompt_text, _prompt_version = load_prompt(AGENT_NAME)
     api_key = VisionModelFactory.validate_api_key(cfg.provider)
     model = VisionModelFactory.create(

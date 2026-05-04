@@ -21,10 +21,57 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 DEFAULT_PROVIDER = "anthropic"
-DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+
+# P17 — Decision 4 per-class default. Safety-critical ID extractors fall
+# back to Sonnet (high-precision typed output); everything else falls back
+# to Haiku (cheaper, appropriate for less-strict schemas). A YAML deletion
+# or typo on one of the four ID-class entries used to silently downgrade
+# them to Haiku via the global ``DEFAULT_MODEL`` constant; per-class
+# resolution closes that gap.
+_SONNET_4_6 = "claude-sonnet-4-6-20260101"
+_HAIKU_4_5 = "claude-haiku-4-5-20251001"
+
+_SONNET_FALLBACK_AGENTS: frozenset[str] = frozenset({
+    "passport",
+    "driver_licence",
+    "national_id",
+    "visa",
+})
+
+
+def _default_model_for(agent_name: str) -> str:
+    """Per-class default per Decision 4: Sonnet for the four safety-critical
+    ID extractors, Haiku for everything else."""
+    return _SONNET_4_6 if agent_name in _SONNET_FALLBACK_AGENTS else _HAIKU_4_5
+
+
+# Kept as a module-level constant for the small number of consumers that
+# imported it for telemetry / debugging — they get the *non-ID* default.
+# Callers that need the per-class value should call ``_default_model_for``
+# directly. (Tests that pinned this to assert the old global behaviour
+# have been migrated to the per-class lookup.)
+DEFAULT_MODEL = _HAIKU_4_5
 
 ENV_PREFIX = "DOC_EXTRACTOR"
 AGENTS_YAML_PATH = Path(__file__).parent / "agents.yaml"
+
+
+def build_cli_overrides(
+    *, provider: str | None, model: str | None
+) -> dict[str, str] | None:
+    """Build the CLI-override dict for ``resolve_agent_config``.
+
+    Returns ``None`` when neither flag is set so the precedence chain
+    falls through to env / YAML / fallback uniformly. Both factory
+    signatures (15 specialists + classifier + verifier) call this so the
+    plumbing for ``--model`` lives in exactly one place.
+    """
+    overrides: dict[str, str] = {}
+    if provider:
+        overrides["provider"] = provider
+    if model:
+        overrides["model"] = model
+    return overrides or None
 
 
 class AgentConfig(BaseModel):
@@ -75,7 +122,11 @@ def resolve_agent_config(
 
     used_fallback = False
     resolved: dict[str, str] = {}
-    for field, fallback in (("provider", DEFAULT_PROVIDER), ("model", DEFAULT_MODEL)):
+    fallbacks = (
+        ("provider", DEFAULT_PROVIDER),
+        ("model", _default_model_for(agent_name)),
+    )
+    for field, fallback in fallbacks:
         cli_value = overrides.get(field)
         env_value = os.environ.get(_env_key(agent_name, field))
         yaml_value = yaml_entry.get(field)

@@ -91,6 +91,18 @@ def test_provider_override_beats_yaml(mocked_deps: dict[str, MagicMock]) -> None
     mocked_deps["validate_api_key"].assert_called_once_with("openai")
 
 
+def test_model_override_beats_yaml(mocked_deps: dict[str, MagicMock]) -> None:
+    """P15 — ``--model`` plumbs through the factory signature into
+    ``resolve_agent_config`` as a CLI override. Without this plumbing,
+    ``doc-extractor extract --model claude-sonnet-4-6-20260101`` silently ran the YAML default."""
+    create_other_agent(model="claude-sonnet-4-6-20260101")
+
+    create_kwargs: dict[str, Any] = mocked_deps["create"].call_args.kwargs
+    assert create_kwargs["model_id"] == "claude-sonnet-4-6-20260101"
+    # CLI override only sets model; provider still resolves via lower layers.
+    assert create_kwargs["provider"] == "anthropic"
+
+
 def test_no_module_level_agent_attribute() -> None:
     public_attrs = {a for a in dir(other_module) if not a.startswith("_")}
     for name in public_attrs:

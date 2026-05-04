@@ -16,23 +16,29 @@ from __future__ import annotations
 from agno.agent import Agent
 
 from doc_extractor.agents.factory import VisionModelFactory
-from doc_extractor.config.precedence import resolve_agent_config
+from doc_extractor.config.precedence import build_cli_overrides, resolve_agent_config
 from doc_extractor.prompts.loader import load_prompt
 from doc_extractor.schemas.ids import Passport
 
 AGENT_NAME = "passport"
 
 
-def create_passport_agent(provider: str | None = None) -> Agent:
+def create_passport_agent(
+    provider: str | None = None, model: str | None = None
+) -> Agent:
     """Construct a Passport extraction agent.
 
-    Resolution order for the model is the standard precedence chain:
-    explicit ``provider`` arg > env vars > ``config/agents.yaml`` > hardcoded
-    fallback. The prompt is loaded via the cached :func:`load_prompt`; the
-    schema is :class:`Passport`.
+    Resolution order for both ``provider`` and ``model`` is the standard
+    precedence chain: explicit CLI override > env vars >
+    ``config/agents.yaml`` > per-class hardcoded fallback (Decision 4 →
+    Sonnet for the four ID extractors, Haiku otherwise). The prompt is
+    loaded via the cached :func:`load_prompt`; the schema is
+    :class:`Passport`.
     """
-    cli_overrides = {"provider": provider} if provider else None
-    cfg = resolve_agent_config(AGENT_NAME, cli_overrides=cli_overrides)
+    cfg = resolve_agent_config(
+        AGENT_NAME,
+        cli_overrides=build_cli_overrides(provider=provider, model=model),
+    )
     prompt_text, _prompt_version = load_prompt(AGENT_NAME)
     api_key = VisionModelFactory.validate_api_key(cfg.provider)
     model = VisionModelFactory.create(

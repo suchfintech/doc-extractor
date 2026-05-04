@@ -115,7 +115,7 @@ async def extract(
         )
 
     passport_prompt, _passport_version = load_prompt("passport")
-    passport_agent = create_passport_agent(provider=provider)
+    passport_agent = create_passport_agent(provider=provider, model=model)
     passport_result = await passport_agent.arun(PASSPORT_INPUT, images=[image])
     passport = passport_result.content
     if not isinstance(passport, Passport):

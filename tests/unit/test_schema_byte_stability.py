@@ -442,3 +442,71 @@ def test_classifier_rejects_doc_type_outside_DOC_TYPES_literal() -> None:
     Pydantic validation."""
     with pytest.raises(ValidationError):
         Classification(doc_type="MadeUpType")  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# P16 — UltimateBeneficialOwner has its own validator + extra="forbid"
+#
+# UBO does NOT inherit from Frontmatter (would add 10 unrelated provenance
+# fields), so the type-aware ``None → ""`` coercion and the ``extra="forbid"``
+# guard had to be added explicitly. Pre-fix, ``UBO(name=None).name`` was
+# ``None``, which renders as ``name: null`` in YAML — that breaks the
+# byte-stability snapshot the moment a real document has a missing field.
+# ---------------------------------------------------------------------------
+
+
+def test_ubo_coerces_none_string_to_empty_string() -> None:
+    """``None`` on a string field collapses to ``""`` so YAML output stays
+    free of ``null`` literals (the byte-stability invariant)."""
+    ubo = UltimateBeneficialOwner(name=None, dob=None, ownership_percentage=None)  # type: ignore[arg-type]
+    assert ubo.name == ""
+    assert ubo.dob == ""
+    assert ubo.ownership_percentage == ""
+
+
+def test_ubo_dump_renders_empty_string_not_null() -> None:
+    """The validator-coerced empty strings render as ``''`` in YAML, not
+    ``null``. Pre-fix the YAML body contained ``name: null`` which silently
+    broke the byte-stable snapshot the first time a real document had a
+    missing field."""
+    ubo = UltimateBeneficialOwner(name=None)  # type: ignore[arg-type]
+    dumped = yaml.safe_dump(ubo.model_dump(), allow_unicode=True, sort_keys=False)
+    assert "name: ''" in dumped
+    assert "null" not in dumped
+
+
+def test_ubo_rejects_extra_fields() -> None:
+    """``extra="forbid"`` blocks spurious keys — a typo or stale field
+    name from an upstream change surfaces at validation time instead of
+    silently dropping data."""
+    with pytest.raises(ValidationError):
+        UltimateBeneficialOwner(name="X", spurious_field="Y")  # type: ignore[call-arg]
+
+
+def test_ubo_round_trip_preserves_cjk_via_entity_ownership() -> None:
+    """Render → parse on an EntityOwnership with a CJK-named UBO survives
+    byte-equal — the validator must NOT mangle non-empty strings on the
+    way through."""
+    from doc_extractor.markdown_io import parse_md, render_to_md
+
+    eo = EntityOwnership(
+        extractor_version="0.1.0",
+        extraction_provider="anthropic",
+        extraction_model="claude-sonnet-4-6-20260101",
+        extraction_timestamp="2026-05-04T00:00:00Z",
+        prompt_version="entity_ownership@0.1.0",
+        doc_type="EntityOwnership",
+        jurisdiction="HK",
+        entity_name="Acme HK Ltd",
+        ultimate_beneficial_owners=[
+            UltimateBeneficialOwner(
+                name="陳大文", dob="1990-01-15", ownership_percentage="60%"
+            ),
+        ],
+    )
+    md = render_to_md(eo)
+    parsed = parse_md(md)
+    assert parsed == eo
+    assert isinstance(parsed, EntityOwnership)
+    assert parsed.ultimate_beneficial_owners is not None
+    assert parsed.ultimate_beneficial_owners[0].name == "陳大文"
