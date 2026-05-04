@@ -69,18 +69,30 @@ def _make_agent_with_raw(
     """Build a MagicMock Agent whose ``arun`` returns a ``run_response``-shaped
     object AND whose ``agent.run_response`` attribute mirrors that state.
     Both shapes are populated so ``_read_run_response`` finds the data.
+
+    P4 (code review Round 2) — this helper was updated to use Agno's real
+    ``RunOutput`` / ``RunMetrics`` attribute names (``model_provider``,
+    ``model``, ``metrics.cost``, ``metrics.duration``) rather than the
+    fictional ``metrics.provider/model/latency_ms/cost_usd`` the previous
+    helper used. The pre-fix shape silently passed because MagicMock
+    returns truthy children for any attr; the corrected helper would have
+    caught the original Agno-API bug at PR time.
+
+    ``metadata`` is the *output* shape of ``_read_run_response`` (its
+    flat-key dict). This helper translates to the input shape.
     """
-    last_message = MagicMock(content=raw_text)
+    last_message = MagicMock(role="assistant", content=raw_text)
+    # Agno emits duration in seconds; _read_run_response multiplies by 1000.
     metrics = MagicMock(
-        provider=metadata["provider"],
-        model=metadata["model"],
-        latency_ms=metadata["latency_ms"],
-        cost_usd=metadata["cost_usd"],
+        cost=metadata["cost_usd"],
+        duration=metadata["latency_ms"] / 1000.0 if metadata["latency_ms"] else 0.0,
     )
     run_response = MagicMock(
         content=content,
         messages=[last_message],
         metrics=metrics,
+        model_provider=metadata["provider"],
+        model=metadata["model"],
     )
     arun = AsyncMock(return_value=run_response)
     agent = MagicMock(spec=Agent)
@@ -318,15 +330,20 @@ async def test_validation_failure_inlines_primary_raw_only(
 
     # The PR agent's run_response carries a raw response, but its arun
     # raises before the retry layer can pull `.content`. ``_read_run_response``
-    # still picks up the raw text from agent.run_response.messages[-1].
-    last_message = MagicMock(content=failing_raw)
+    # still picks up the raw text from the assistant message on
+    # agent.run_response. P4 — uses Agno's actual attribute names
+    # (model_provider/model on RunOutput, cost/duration on RunMetrics).
+    last_message = MagicMock(role="assistant", content=failing_raw)
     metrics = MagicMock(
-        provider=failing_metadata["provider"],
-        model=failing_metadata["model"],
-        latency_ms=failing_metadata["latency_ms"],
-        cost_usd=failing_metadata["cost_usd"],
+        cost=failing_metadata["cost_usd"],
+        duration=failing_metadata["latency_ms"] / 1000.0,
     )
-    run_response = MagicMock(messages=[last_message], metrics=metrics)
+    run_response = MagicMock(
+        messages=[last_message],
+        metrics=metrics,
+        model_provider=failing_metadata["provider"],
+        model=failing_metadata["model"],
+    )
     failing_pr_agent = MagicMock(spec=Agent)
     failing_pr_agent.arun = AsyncMock(side_effect=err)
     failing_pr_agent.run_response = run_response

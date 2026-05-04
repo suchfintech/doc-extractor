@@ -11,9 +11,13 @@ is no escalation target — the original ``PydanticValidationError`` is
 re-raised so the caller can route to the disagreement queue with
 ``status="validation_failure"``.
 
-Both attempts emit a ``record_extraction`` telemetry line so the cost
-JSONL has paired ``retry_count=0`` / ``retry_count=1`` records under the
-same ``source_key``. ``success=False`` is recorded for failed attempts.
+P10 (code review Round 2) hoisted ``record_extraction`` OUT of this
+helper into ``pipelines.vision_path`` — the retry layer no longer knows
+about telemetry. ``with_validation_retry`` now returns
+``(content, retry_count, attempts)``: an ordered list of
+:class:`AttemptRecord` per call (one when the first attempt succeeded,
+two when the helper escalated). Vision_path iterates ``attempts`` and
+emits one ``record_extraction`` line per attempt.
 """
 from __future__ import annotations
 
@@ -22,15 +26,14 @@ import logging
 import random
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from agno.agent import Agent
 from agno.exceptions import ModelRateLimitError
 from pydantic import BaseModel
 
-from doc_extractor import __version__
 from doc_extractor.exceptions import PydanticValidationError
-from doc_extractor.telemetry import record_extraction
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +116,24 @@ def _escalate(tier: str) -> str | None:
     return f"{provider}-{next_model}"
 
 
+@dataclass(frozen=True)
+class AttemptRecord:
+    """One specialist call attempt — produced by ``with_validation_retry``
+    so callers can emit telemetry per attempt without the retry helper
+    needing a telemetry dependency (P10).
+
+    ``agent`` is exposed so the caller can pull cost / raw text /
+    provider / model from ``agent.run_response`` via
+    ``vision_path._read_run_response`` — the retry layer doesn't import
+    Agno-specific helpers, just hands back the agent reference.
+    """
+
+    tier: str  # e.g. "anthropic-haiku"
+    success: bool
+    latency_ms: float  # wall-clock from arun start to end (or to raise)
+    agent: Agent  # so the caller can inspect run_response for cost/raw text
+
+
 async def with_validation_retry(
     agent_factory: Callable[[str], Agent],
     *arun_args: Any,
@@ -122,66 +143,59 @@ async def with_validation_retry(
     arun_kwargs: dict[str, Any] | None = None,
     prompt_version: str = "",
     doc_type: str = "",
+    attempts_out: list[AttemptRecord] | None = None,
 ) -> tuple[BaseModel, int]:
     """Run the agent once; on ``PydanticValidationError``, retry once with an
     escalated tier. Returns ``(content, retry_count)``.
+
+    ``attempts_out`` (P10): callers that need per-attempt telemetry pass a
+    fresh list; this helper appends one :class:`AttemptRecord` per call
+    (failed or successful). Available even on the exception path so the
+    caller can inspect the failed attempt(s) for the disagreement-queue
+    forensic payload. Defaulting to ``None`` keeps existing call sites
+    working unchanged.
 
     Note: the AC sketches an ``image: Image`` parameter; in practice the
     pipeline's specialist call shape is ``agent.arun(prompt_text, images=[image])``,
     so this implementation accepts ``*arun_args`` plus ``arun_kwargs`` and
     forwards them verbatim. The tests exercise both shapes.
-    """
-    kwargs = arun_kwargs or {}
 
-    async def _attempt(tier: str, retry_count: int) -> BaseModel:
+    ``agent_name``, ``source_key``, ``prompt_version``, ``doc_type`` are
+    accepted for backwards-compat with existing call sites but no longer
+    consumed here — telemetry framing is vision_path's responsibility now.
+    """
+    del agent_name, source_key, prompt_version, doc_type  # P10 — caller's now
+    kwargs = arun_kwargs or {}
+    attempts: list[AttemptRecord] = attempts_out if attempts_out is not None else []
+
+    async def _attempt(tier: str) -> BaseModel:
         agent = agent_factory(tier)
-        provider_part, model_part = _split_tier(tier)
         start = time.monotonic()
         try:
             result = await agent.arun(*arun_args, **kwargs)
         except PydanticValidationError:
             latency_ms = (time.monotonic() - start) * 1000.0
-            record_extraction(
-                source_key=source_key,
-                doc_type=doc_type,
-                agent=agent_name,
-                provider=provider_part,
-                model=model_part,
-                cost_usd=0.0,
-                latency_ms=latency_ms,
-                retry_count=retry_count,
-                success=False,
-                prompt_version=prompt_version,
-                extractor_version=__version__,
+            attempts.append(
+                AttemptRecord(tier=tier, success=False, latency_ms=latency_ms, agent=agent)
             )
             raise
 
         latency_ms = (time.monotonic() - start) * 1000.0
-        record_extraction(
-            source_key=source_key,
-            doc_type=doc_type,
-            agent=agent_name,
-            provider=provider_part,
-            model=model_part,
-            cost_usd=0.0,
-            latency_ms=latency_ms,
-            retry_count=retry_count,
-            success=True,
-            prompt_version=prompt_version,
-            extractor_version=__version__,
+        attempts.append(
+            AttemptRecord(tier=tier, success=True, latency_ms=latency_ms, agent=agent)
         )
         if not isinstance(result.content, BaseModel):
             # Agno usually surfaces malformed output as a ValidationError, but
             # if it ever returns a non-Pydantic content we treat it the same
             # way for the retry contract.
             raise TypeError(
-                f"agent {agent_name!r} returned content of type "
+                f"agent returned content of type "
                 f"{type(result.content).__name__}, expected pydantic BaseModel"
             )
         return result.content
 
     try:
-        content = await _attempt(primary_provider, retry_count=0)
+        content = await _attempt(primary_provider)
         return content, 0
     except PydanticValidationError:
         escalated = _escalate(primary_provider)
@@ -190,5 +204,5 @@ async def with_validation_retry(
             # to the disagreement queue with status="validation_failure".
             raise
         # One retry with the escalated tier — any failure here propagates.
-        content = await _attempt(escalated, retry_count=1)
+        content = await _attempt(escalated)
         return content, 1

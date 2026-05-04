@@ -300,3 +300,65 @@ async def test_cost_breach_true_when_total_exceeds_ceiling_and_harness_still_ret
 
     assert scorecard.cost_breach is True
     assert scorecard.total_cost_usd > 15.00
+
+
+# ---------------------------------------------------------------------------
+# P12 (code review Round 2) — _resolve_cost reads ExtractedDoc.cost_usd
+#
+# Pre-fix _resolve_cost returned 0.0 unconditionally, so the $15 cost
+# ceiling could never trigger. The new contract: vision_path.run rolls
+# up Agno run_response.metrics.cost into ExtractedDoc.cost_usd; harness
+# reads the field directly. These tests pin both sides.
+# ---------------------------------------------------------------------------
+
+
+def test_extracted_doc_carries_cost_usd_field() -> None:
+    """``ExtractedDoc`` exposes a ``cost_usd: float = 0.0`` field for
+    per-extract cost attribution. Default-zero so callers that don't
+    care can leave it alone."""
+    ed_default = ExtractedDoc(key="k", skipped=False, analysis_key="k.md")
+    assert ed_default.cost_usd == 0.0
+
+    ed_with_cost = ExtractedDoc(
+        key="k", skipped=False, analysis_key="k.md", cost_usd=15.50
+    )
+    assert ed_with_cost.cost_usd == 15.50
+
+
+def test_resolve_cost_reads_from_extracted_doc_field() -> None:
+    """``_resolve_cost`` returns ``ExtractedDoc.cost_usd`` directly so
+    cost-ceiling assertions actually fire on real runs (pre-fix returned
+    0.0 unconditionally)."""
+    ed = ExtractedDoc(
+        key="k", skipped=False, analysis_key="k.md", doc_type="Passport", cost_usd=15.50
+    )
+    assert harness._resolve_cost(ed) == 15.50
+
+
+@pytest.mark.asyncio
+async def test_cost_ceiling_breach_fires_via_extracted_doc_cost_usd(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """End-to-end P12: ExtractedDoc(cost_usd=15.50) → harness aggregates
+    via _resolve_cost (no monkeypatch) → Scorecard.cost_breach=True. This
+    is the test that would have caught the pre-fix
+    ``_resolve_cost = lambda _: 0.0`` bug at PR time."""
+    expected = _passport()
+    image_key = _write_pair(tmp_path, doc_type="Passport", stem="cost_breach", expected=expected)
+    extracted = ExtractedDoc(
+        key=image_key,
+        skipped=False,
+        analysis_key=f"{image_key}.md",
+        doc_type="Passport",
+        cost_usd=15.50,
+    )
+    _patch_loader(monkeypatch, {f"{image_key}.md": expected})
+
+    scorecard = await harness.run_eval(
+        golden_dir=tmp_path,
+        extract_batch_fn=_make_extract_batch({image_key: extracted}),
+        cost_ceiling_usd=15.00,
+    )
+
+    assert scorecard.cost_breach is True
+    assert scorecard.total_cost_usd > 15.00

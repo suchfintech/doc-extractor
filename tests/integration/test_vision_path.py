@@ -160,6 +160,9 @@ async def test_head_skip_short_circuits_before_provider(
         "verifier_audit": None,
         "disagreement_key": None,
         "retry_count": 0,
+        # P12 — vision_path now reports the rolled-up cost; HEAD-skip path
+        # incurs zero provider cost.
+        "cost_usd": 0.0,
     }
     patched_io["head"].assert_called_once_with(EXPECTED_ANALYSIS_KEY)
     patched_io["presign"].assert_not_called()
@@ -734,35 +737,39 @@ async def test_raw_responses_propagate_to_record_disagreement_on_fail(
         Classification(doc_type="PaymentReceipt", jurisdiction="CN")
     )
 
-    # Build agents whose run_response carries the raw text + metadata
-    # vision_path._read_run_response should pull through.
-    pr_last_message = MagicMock(content="primary raw text — 张三")
+    # P4 — build agents whose ``run_response`` matches the real Agno
+    # ``RunOutput`` / ``RunMetrics`` attribute names (``model_provider``,
+    # ``model``, ``metrics.cost``, ``metrics.duration``). Pre-P4 fix this
+    # test passed against the wrong names because MagicMock returns a
+    # truthy child for any attr; the helper's defensive isinstance checks
+    # silently fell back to defaults. The corrected mocks below would
+    # have caught the original bug.
+    pr_last_message = MagicMock(role="assistant", content="primary raw text — 张三")
     pr_metrics = MagicMock(
-        provider="anthropic",
-        model="claude-sonnet-4-6-20260101",
-        latency_ms=12.5,
-        cost_usd=0.01,
+        cost=0.01,
+        duration=0.0125,  # seconds — helper multiplies by 1000 for ms
     )
     pr_run_response = MagicMock(
         content=_payment_receipt_fixture(),
         messages=[pr_last_message],
         metrics=pr_metrics,
+        model_provider="anthropic",
+        model="claude-sonnet-4-6-20260101",
     )
     pr_agent = MagicMock(spec=Agent)
     pr_agent.arun = AsyncMock(return_value=pr_run_response)
     pr_agent.run_response = pr_run_response
 
-    ver_last_message = MagicMock(content="verifier raw text — disagree on credit")
-    ver_metrics = MagicMock(
-        provider="anthropic",
-        model="claude-sonnet-4-6-20260101",
-        latency_ms=8.4,
-        cost_usd=0.02,
+    ver_last_message = MagicMock(
+        role="assistant", content="verifier raw text — disagree on credit"
     )
+    ver_metrics = MagicMock(cost=0.02, duration=0.0084)
     ver_run_response = MagicMock(
         content=_verifier_audit_fixture("fail"),
         messages=[ver_last_message],
         metrics=ver_metrics,
+        model_provider="anthropic",
+        model="claude-sonnet-4-6-20260101",
     )
     verifier_agent = MagicMock(spec=Agent)
     verifier_agent.arun = AsyncMock(return_value=ver_run_response)
@@ -781,6 +788,7 @@ async def test_raw_responses_propagate_to_record_disagreement_on_fail(
     assert "verifier_raw" in call
     pr_text, pr_meta = call["primary_raw"]
     assert pr_text == "primary raw text — 张三"
+    # duration=0.0125 seconds → 12.5 ms (helper does the unit conversion).
     assert pr_meta == {
         "provider": "anthropic",
         "model": "claude-sonnet-4-6-20260101",
@@ -790,7 +798,7 @@ async def test_raw_responses_propagate_to_record_disagreement_on_fail(
     ver_text, ver_meta = call["verifier_raw"]
     assert ver_text == "verifier raw text — disagree on credit"
     assert ver_meta["provider"] == "anthropic"
-    assert ver_meta["latency_ms"] == 8.4
+    assert ver_meta["latency_ms"] == pytest.approx(8.4)
 
 
 # ---------------------------------------------------------------------------
@@ -963,3 +971,330 @@ def test_verifier_gated_types_is_subset_of_specialist_meta() -> None:
     assert vision_path._VERIFIER_GATED_TYPES.issubset(
         set(vision_path._SPECIALIST_META.keys())
     )
+
+
+# ---------------------------------------------------------------------------
+# P4 (code review Round 2) — _read_run_response uses real Agno attribute names
+#
+# The pre-fix helper read non-existent attribute names (``metrics.provider``,
+# ``metrics.cost_usd``, etc.) and the defensive isinstance checks silently
+# returned empty defaults. This test constructs real Agno dataclasses
+# (no MagicMock, no monkeypatching of Agno internals) so a future Agno
+# rename surfaces here as a real attribute lookup failure.
+# ---------------------------------------------------------------------------
+
+
+def test_read_run_response_against_real_agno_run_output_dataclass() -> None:
+    """``_read_run_response`` extracts the right fields from a *real* Agno
+    ``RunOutput`` + ``RunMetrics`` + ``Message`` triple.
+
+    Hard-pinning the dataclass shape (rather than mocking with arbitrary
+    attribute names) means an Agno major-version rename triggers a real
+    AttributeError at test time instead of silently degrading the helper
+    to returning empty defaults — which is what the original P4 bug did.
+    Agno is pinned to ``>=2.6.0,<3.0`` in pyproject.toml; a 3.x bump
+    needs to refresh both the helper and this test together.
+    """
+    from agno.metrics import RunMetrics
+    from agno.models.message import Message
+    from agno.run.agent import RunOutput
+
+    metrics = RunMetrics(
+        input_tokens=100,
+        output_tokens=50,
+        total_tokens=150,
+        cost=0.0123,
+        duration=1.234,  # SECONDS — helper multiplies by 1000 for ms
+    )
+    raw_msg = Message(id="m1", role="assistant", content="raw model text — 张三")
+    run_output = RunOutput(
+        content=None,  # the typed Pydantic instance lives here in production
+        model="claude-sonnet-4-6-20260101",
+        model_provider="anthropic",
+        messages=[raw_msg],
+        metrics=metrics,
+    )
+
+    class _StubAgent:
+        run_response = run_output
+
+    text, meta = vision_path._read_run_response(_StubAgent())  # type: ignore[arg-type]
+
+    assert text == "raw model text — 张三"
+    assert meta == {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-6-20260101",
+        "cost_usd": 0.0123,
+        "latency_ms": 1234.0,  # 1.234 s × 1000
+    }
+
+
+def test_read_run_response_skips_non_assistant_messages() -> None:
+    """Walk backwards through ``messages`` and pick the first
+    assistant-role entry. Tool / system messages are skipped — pre-P4 the
+    helper read ``messages[-1].content`` blindly which sometimes captured
+    a tool message instead of the model's actual reply."""
+    from agno.models.message import Message
+    from agno.run.agent import RunOutput
+
+    user = Message(id="u1", role="user", content="please extract")
+    assistant = Message(id="a1", role="assistant", content="the assistant text")
+    tool = Message(id="t1", role="tool", content="tool-call output")
+    run_output = RunOutput(
+        content=None,
+        model="m",
+        model_provider="p",
+        messages=[user, assistant, tool],
+        metrics=None,
+    )
+
+    class _StubAgent:
+        run_response = run_output
+
+    text, _meta = vision_path._read_run_response(_StubAgent())  # type: ignore[arg-type]
+    assert text == "the assistant text"
+
+
+def test_read_run_response_returns_empty_defaults_when_run_response_is_none() -> None:
+    class _StubAgent:
+        run_response = None
+
+    text, meta = vision_path._read_run_response(_StubAgent())  # type: ignore[arg-type]
+    assert text == ""
+    assert meta == {"provider": "", "model": "", "latency_ms": 0.0, "cost_usd": 0.0}
+
+
+# ---------------------------------------------------------------------------
+# P10 (code review Round 2) — telemetry hoisted into vision_path.run
+#
+# The retry helper used to be the only ``record_extraction`` call site,
+# which meant HEAD-skip and any path that bypassed the helper emitted
+# zero telemetry — Story 8.1's "one record per extraction" invariant
+# was a half-truth. These tests pin the new contract: vision_path emits
+# telemetry on the success path, validation_failure path, AND HEAD-skip
+# path.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def captured_telemetry(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Capture record_extraction calls fired from vision_path."""
+    calls: list[dict[str, Any]] = []
+
+    def fake(**kwargs: Any) -> None:
+        calls.append(kwargs)
+
+    monkeypatch.setattr(vision_path, "record_extraction", fake)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_telemetry_emitted_on_successful_specialist_extraction(
+    patched_io: dict[str, MagicMock],
+    captured_telemetry: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Happy path: one specialist call → one telemetry row with the
+    real prompt_version (not the empty string the retry helper used to
+    hardcode)."""
+    classifier_agent, _ = _make_async_agent(
+        Classification(doc_type="BankStatement", jurisdiction="NZ")
+    )
+    bs_agent, _ = _make_async_agent(_bank_statement_fixture())
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    _patch_factory(monkeypatch, "BankStatement", bs_agent)
+
+    await vision_path.run(SOURCE_KEY)
+
+    # BankStatement isn't verifier-gated, so exactly one specialist row.
+    assert len(captured_telemetry) == 1
+    row = captured_telemetry[0]
+    assert row["agent"] == "bank_statement"
+    assert row["doc_type"] == "BankStatement"
+    assert row["success"] is True
+    assert row["retry_count"] == 0
+    # P11 — prompt_version is the real value, not the empty string the
+    # retry helper used to record.
+    assert row["prompt_version"]
+    assert row["prompt_version"] != ""
+
+
+@pytest.mark.asyncio
+async def test_telemetry_emitted_on_validation_failure_path(
+    patched_io: dict[str, MagicMock],
+    captured_telemetry: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the retry layer exhausts on a Sonnet-primary
+    PydanticValidationError, vision_path still emits a per-attempt
+    telemetry row (with success=False) before propagating the exception."""
+    from doc_extractor.exceptions import PydanticValidationError
+
+    classifier_agent, _ = _make_async_agent(
+        Classification(doc_type="PaymentReceipt", jurisdiction="CN")
+    )
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+
+    err = _pydantic_validation_error()
+
+    async def fake_retry(
+        _factory: Any,
+        *_args: Any,
+        attempts_out: list[Any] | None = None,
+        **_kwargs: Any,
+    ) -> tuple[Any, int]:
+        # Mimic the helper appending an AttemptRecord before raising.
+        from doc_extractor.agents.retry import AttemptRecord
+
+        agent_stub = MagicMock(spec=Agent)
+        agent_stub.run_response = None
+        if attempts_out is not None:
+            attempts_out.append(
+                AttemptRecord(
+                    tier="anthropic-sonnet",
+                    success=False,
+                    latency_ms=42.0,
+                    agent=agent_stub,
+                )
+            )
+        raise err
+
+    monkeypatch.setattr(vision_path, "with_validation_retry", fake_retry)
+    # Stub disagreement queue so the exception path doesn't try to write S3.
+    monkeypatch.setattr(vision_path, "record_disagreement", lambda **_: "queue/key")
+
+    with pytest.raises(PydanticValidationError):
+        await vision_path.run(PR_SOURCE_KEY)
+
+    # One telemetry row for the failed attempt.
+    assert len(captured_telemetry) == 1
+    row = captured_telemetry[0]
+    assert row["agent"] == "payment_receipt"
+    assert row["success"] is False
+    assert row["doc_type"] == "PaymentReceipt"
+    assert row["retry_count"] == 0
+    assert row["latency_ms"] == 42.0
+
+
+@pytest.mark.asyncio
+async def test_telemetry_emitted_on_head_skip_path(
+    patched_io: dict[str, MagicMock],
+    captured_telemetry: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HEAD-skip emits a sentinel telemetry row so cost-tracker accounting
+    has full coverage — pre-P10 fix, an idempotent re-run silently
+    contributed zero records and the cost ledger had blind spots.
+
+    Convention (documented in vision_path.run): ``success=True`` (the
+    desired outcome of an idempotent re-run is achieved), ``cost_usd=0``
+    and empty provider/model (no provider call made), ``doc_type=""``
+    (classifier didn't run)."""
+    patched_io["head"].return_value = True
+    classifier_agent, classifier_arun = _make_async_agent(content=None)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+
+    result = await vision_path.run(SOURCE_KEY)
+
+    assert result["skipped"] is True
+    assert classifier_arun.await_count == 0
+    # Exactly one telemetry row for the skip event.
+    assert len(captured_telemetry) == 1
+    row = captured_telemetry[0]
+    assert row["success"] is True
+    assert row["cost_usd"] == 0.0
+    assert row["provider"] == ""
+    assert row["model"] == ""
+    assert row["doc_type"] == ""
+
+
+@pytest.mark.asyncio
+async def test_telemetry_emits_verifier_row_when_gated(
+    patched_io: dict[str, MagicMock],
+    captured_telemetry: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verifier-gated specialists emit TWO telemetry rows: one for the
+    specialist, one for the verifier. Non-gated specialists emit ONE
+    (covered by ``test_telemetry_emitted_on_successful_specialist_extraction``)."""
+    classifier_agent, _ = _make_async_agent(
+        Classification(doc_type="PaymentReceipt", jurisdiction="CN")
+    )
+    pr_agent, _ = _make_async_agent(_payment_receipt_fixture())
+    verifier_agent, _ = _make_async_agent(_verifier_audit_fixture("pass"))
+
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    _patch_factory(monkeypatch, "PaymentReceipt", pr_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+
+    await vision_path.run(PR_SOURCE_KEY)
+
+    rows_by_agent = [r["agent"] for r in captured_telemetry]
+    assert rows_by_agent == ["payment_receipt", "verifier"]
+
+
+@pytest.mark.asyncio
+async def test_cost_usd_aggregates_across_specialist_and_verifier(
+    patched_io: dict[str, MagicMock],
+    captured_telemetry: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P12 — vision_path.run reports a rolled-up ``cost_usd`` summing the
+    per-call costs from each Agno run_response. Specialist + verifier on
+    a gated type both contribute. P4-corrected attribute names
+    (``metrics.cost``, ``run_response.model_provider``) feed the rollup."""
+    from agno.metrics import RunMetrics
+    from agno.models.message import Message
+    from agno.run.agent import RunOutput
+
+    classifier_agent, _ = _make_async_agent(
+        Classification(doc_type="PaymentReceipt", jurisdiction="CN")
+    )
+
+    # Specialist agent: real Agno RunOutput so _read_run_response sees a
+    # real cost value (rather than relying on the test's MagicMock
+    # plumbing). Cost = $0.04.
+    pr_run_output = RunOutput(
+        content=_payment_receipt_fixture(),
+        model="claude-sonnet-4-6-20260101",
+        model_provider="anthropic",
+        messages=[Message(id="m1", role="assistant", content="raw")],
+        metrics=RunMetrics(cost=0.04, duration=0.1),
+    )
+    pr_agent = MagicMock(spec=Agent)
+    pr_agent.arun = AsyncMock(return_value=pr_run_output)
+    pr_agent.run_response = pr_run_output
+
+    # Verifier agent: cost = $0.01.
+    ver_run_output = RunOutput(
+        content=_verifier_audit_fixture("pass"),
+        model="claude-sonnet-4-6-20260101",
+        model_provider="anthropic",
+        messages=[Message(id="v1", role="assistant", content="ok")],
+        metrics=RunMetrics(cost=0.01, duration=0.05),
+    )
+    verifier_agent = MagicMock(spec=Agent)
+    verifier_agent.arun = AsyncMock(return_value=ver_run_output)
+    verifier_agent.run_response = ver_run_output
+
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    _patch_factory(monkeypatch, "PaymentReceipt", pr_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+
+    result = await vision_path.run(PR_SOURCE_KEY)
+    assert result["cost_usd"] == pytest.approx(0.05)
+
+
+def _pydantic_validation_error() -> Any:
+    """Build a real PydanticValidationError for the validation_failure test."""
+    from pydantic import BaseModel as _BM
+    from pydantic import ValidationError as _VE
+
+    class _Strict(_BM):
+        required: str
+
+    try:
+        _Strict.model_validate({})
+    except _VE as exc:
+        return exc
+    raise RuntimeError("expected ValidationError")

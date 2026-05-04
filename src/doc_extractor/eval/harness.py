@@ -110,11 +110,18 @@ def _load_extracted_content(analysis_key: str) -> Frontmatter:
 
 
 def _resolve_cost(extracted: ExtractedDoc) -> float:
-    """Per-extract cost attribution. Returns 0.0 by default — tests
-    monkeypatch this when they want to assert ``total_cost_usd`` aggregation.
-    Production cost lives in the telemetry JSONL, not on ExtractedDoc.
+    """Per-extract cost attribution.
+
+    P12 (code review Round 2) — reads the rolled-up cost off
+    ``ExtractedDoc.cost_usd`` (populated by ``vision_path.run`` /
+    ``extract.extract`` from each Agno run_response's ``metrics.cost``).
+    Pre-fix this returned 0.0 unconditionally so the Story 8.7 / NFR7
+    $15 cost ceiling could never trigger.
+
+    Tests can still monkeypatch this when they want to drive a synthetic
+    cost without populating the field on every fixture.
     """
-    return 0.0
+    return float(extracted.cost_usd)
 
 
 def _score_pair(

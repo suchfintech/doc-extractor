@@ -18,6 +18,7 @@ in Epic 5). Native images keep the presigned-URL fast path.
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from agno.agent import Agent
@@ -26,7 +27,11 @@ from agno.media import Image
 from doc_extractor import __version__, markdown_io, s3_io
 from doc_extractor.agents.classifier import create_classifier_agent
 from doc_extractor.agents.registry import FACTORIES
-from doc_extractor.agents.retry import with_validation_retry
+from doc_extractor.agents.retry import (
+    AttemptRecord,
+    _split_tier,
+    with_validation_retry,
+)
 from doc_extractor.agents.verifier import create_verifier_agent
 from doc_extractor.config.precedence import resolve_agent_config
 from doc_extractor.disagreement import record_disagreement
@@ -48,6 +53,7 @@ from doc_extractor.schemas.proof_of_address import ProofOfAddress
 from doc_extractor.schemas.tax_residency import TaxResidency
 from doc_extractor.schemas.verification_report import VerificationReport
 from doc_extractor.schemas.verifier import VerifierAudit
+from doc_extractor.telemetry import record_extraction
 
 CLASSIFIER_INPUT = "Classify this document image."
 
@@ -214,18 +220,37 @@ _EMPTY_METADATA: dict[str, Any] = {
 
 
 def _read_run_response(agent: Agent | None) -> tuple[str, dict[str, Any]]:
-    """Story 6.1 — best-effort raw-text + metadata capture from an Agent.
+    """Story 6.1 + P4 (code review Round 2) — raw-text + metadata capture
+    from an Agno Agent's ``run_response`` after ``arun`` returns.
 
-    Agno exposes the last call's state on ``agent.run_response`` after
-    ``arun`` returns: ``messages[-1].content`` is the model's raw text and
-    ``metrics`` carries provider / model / latency_ms / cost_usd. The
-    surface is best-effort — older Agno versions may not populate every
-    attr — so this helper degrades to empty defaults rather than raising.
+    Verified against ``agno==2.6.4`` (pinned in ``pyproject.toml``). The
+    actual shapes:
 
-    Defensive against ``MagicMock`` auto-attrs (every getattr on a
-    ``MagicMock`` returns a child mock, which is truthy). The
-    ``isinstance`` checks below ensure we only trust real ``str`` /
-    numeric values; bare-``MagicMock`` test fixtures fall back to defaults.
+    * ``run_response.content`` — the typed Pydantic instance (NOT raw text).
+    * ``run_response.messages`` — ordered ``Message`` list; the assistant-
+      role message's ``content`` carries the model's raw text. Pre-fix
+      this helper read ``messages[-1].content`` blindly which sometimes
+      caught a tool / system message instead.
+    * ``run_response.model_provider`` — provider name (``"anthropic"``).
+      Pre-fix: read ``metrics.provider`` which doesn't exist.
+    * ``run_response.model`` — model id (``"claude-sonnet-4-6-20260101"``).
+      Pre-fix: read ``metrics.model`` which doesn't exist.
+    * ``run_response.metrics.cost`` — float USD. Pre-fix: read
+      ``metrics.cost_usd`` which doesn't exist.
+    * ``run_response.metrics.duration`` — float SECONDS (multiplied by
+      1000 here for the ms-shaped telemetry record). Pre-fix: read
+      ``metrics.latency_ms`` which doesn't exist.
+
+    All four pre-fix lookups silently returned ``None`` from
+    ``getattr(..., None)`` and the defensive ``isinstance`` checks
+    collapsed to defaults — the bug masqueraded as "Agno doesn't always
+    populate metadata" rather than a typo. Tests using bare ``MagicMock``
+    fixtures with explicitly-pinned ``provider``/``model`` attrs hid the
+    bug because MagicMock returns truthy children for any attribute name.
+
+    Defensive against ``MagicMock`` auto-attrs at the leaf level: only
+    real ``str`` / numeric values populate the result; otherwise defaults
+    pass through.
     """
     raw_text = ""
     metadata = dict(_EMPTY_METADATA)
@@ -237,23 +262,33 @@ def _read_run_response(agent: Agent | None) -> tuple[str, dict[str, Any]]:
     if run_response is None:
         return raw_text, metadata
 
+    # Raw text from the assistant's most recent message (walk backwards so
+    # any post-extraction follow-up tool/system messages don't pre-empt it).
     messages = getattr(run_response, "messages", None)
-    if isinstance(messages, list) and messages:
-        last = messages[-1]
-        last_content = getattr(last, "content", None)
-        if isinstance(last_content, str):
-            raw_text = last_content
+    if isinstance(messages, list):
+        for msg in reversed(messages):
+            role = getattr(msg, "role", None)
+            content = getattr(msg, "content", None)
+            if role == "assistant" and isinstance(content, str) and content:
+                raw_text = content
+                break
+
+    provider = getattr(run_response, "model_provider", None)
+    if isinstance(provider, str) and provider:
+        metadata["provider"] = provider
+    model = getattr(run_response, "model", None)
+    if isinstance(model, str) and model:
+        metadata["model"] = model
 
     metrics = getattr(run_response, "metrics", None)
     if metrics is not None:
-        for key in ("provider", "model"):
-            value = getattr(metrics, key, None)
-            if isinstance(value, str) and value:
-                metadata[key] = value
-        for key in ("latency_ms", "cost_usd"):
-            value = getattr(metrics, key, None)
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                metadata[key] = float(value)
+        cost = getattr(metrics, "cost", None)
+        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            metadata["cost_usd"] = float(cost)
+        duration = getattr(metrics, "duration", None)
+        if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+            # Agno emits duration in SECONDS; telemetry stores ms.
+            metadata["latency_ms"] = float(duration) * 1000.0
 
     return raw_text, metadata
 
@@ -305,12 +340,38 @@ async def run(source_key: str) -> dict[str, Any]:
     flag), ``doc_type``, ``verifier_audit`` (dumped :class:`VerifierAudit`
     for any of the five verifier-gated doc types, ``None`` otherwise),
     ``disagreement_key`` (set when the verifier returned ``fail`` or the
-    retry exhausted), and ``retry_count`` (0 on first-attempt success,
-    1 on escalated retry success).
+    retry exhausted), ``retry_count`` (0 on first-attempt success, 1 on
+    escalated retry success), and ``cost_usd`` (sum of per-call cost
+    across every Agno agent invoked — specialist attempts + verifier).
+
+    P10 (code review Round 2) — orchestration is the only ``record_extraction``
+    caller now. The retry helper returns per-attempt :class:`AttemptRecord`
+    instances; this function iterates and emits one telemetry row per
+    attempt + one for the HEAD-skip case + one for the verifier when run.
+    Cost telemetry rolls up into the result dict so the eval harness can
+    read it back via ``ExtractedDoc.cost_usd`` (P12).
     """
     analysis_key = _analysis_key_for(source_key)
 
     if s3_io.head_analysis(analysis_key):
+        # P10 — emit a skip-marker telemetry row so cost-tracker accounting
+        # has a complete picture even when extraction is short-circuited.
+        # ``success=True`` because the analysis IS available (HEAD-skip is
+        # the desired outcome of an idempotent re-run); ``cost_usd=0`` and
+        # empty provider/model reflect that no provider call was made.
+        record_extraction(
+            source_key=source_key,
+            doc_type="",
+            agent="",
+            provider="",
+            model="",
+            cost_usd=0.0,
+            latency_ms=0.0,
+            retry_count=0,
+            success=True,
+            prompt_version="",
+            extractor_version=__version__,
+        )
         return {
             "analysis_key": analysis_key,
             "skipped": True,
@@ -318,6 +379,7 @@ async def run(source_key: str) -> dict[str, Any]:
             "verifier_audit": None,
             "disagreement_key": None,
             "retry_count": 0,
+            "cost_usd": 0.0,
         }
 
     image = _build_image_for_source(source_key)
@@ -338,25 +400,52 @@ async def run(source_key: str) -> dict[str, Any]:
     factory = FACTORIES[classification.doc_type]
     meta = _SPECIALIST_META[classification.doc_type]
 
-    # Story 3.8 — wrap the specialist call in with_validation_retry. Story
-    # 4.4 generalised this from PaymentReceipt to all five verifier-gated
-    # types; P2 (this fix) extends it to every doc_type. Specialists
-    # default to Sonnet (top-tier) per agents.yaml, so the escalation path
-    # is dormant in production today; the wrapping is forward-compat and
-    # exercises the validation_failure → disagreement queue branch
-    # uniformly across types.
-    #
-    # Story 6.1 — the factory closure captures every constructed agent so
-    # we can read the LAST agent's ``run_response`` for the forensic
-    # payload (raw text + metadata) regardless of whether the retry
-    # succeeded or exhausted. Without this, the retry layer holds the
-    # only reference and the caller can't see the raw model output.
-    captured_agents: list[Agent] = []
+    # P11 — load the specialist's prompt version once so both the telemetry
+    # records below and the provenance auto-fill in
+    # ``_populate_pipeline_provenance`` see the same string. Pre-fix the
+    # retry helper hardcoded ``prompt_version=""`` on every record.
+    _, prompt_version = load_prompt(meta.agent_name)
 
+    cost_usd_total = 0.0
+    # P10 — pass a fresh attempts list to the retry helper so we can
+    # iterate per-attempt telemetry rows on BOTH the success and the
+    # exception path. Without this, the per-attempt cost / raw text /
+    # provider info would be unrecoverable mid-exception.
+    attempts: list[AttemptRecord] = []
+
+    # The retry helper calls ``agent_factory(tier)`` with the tier string,
+    # but FACTORIES entries are ``create_X_agent(provider=None, model=None)``
+    # which only accept keyword args. Wrap to discard the tier — the
+    # factory builds the same specialist regardless; tier is informational
+    # for the retry helper's own bookkeeping (and the AttemptRecord).
     def _retry_factory(_tier: str) -> Agent:
-        agent = factory()
-        captured_agents.append(agent)
-        return agent
+        return factory()
+
+    def _emit_specialist_telemetry() -> None:
+        nonlocal cost_usd_total
+        for i, att in enumerate(attempts):
+            provider_part, model_part = _split_tier(att.tier)
+            _, attempt_meta = _read_run_response(att.agent)
+            # Trust Agno's reported model/provider when populated; fall
+            # back to the tier-derived names so failed attempts (where
+            # metrics may be unset) still report something meaningful.
+            provider = attempt_meta["provider"] or provider_part
+            model = attempt_meta["model"] or model_part
+            cost = float(attempt_meta["cost_usd"])
+            cost_usd_total += cost
+            record_extraction(
+                source_key=source_key,
+                doc_type=classification.doc_type,
+                agent=meta.agent_name,
+                provider=provider,
+                model=model,
+                cost_usd=cost,
+                latency_ms=att.latency_ms,
+                retry_count=i,
+                success=att.success,
+                prompt_version=prompt_version,
+                extractor_version=__version__,
+            )
 
     try:
         content, retry_count = await with_validation_retry(
@@ -367,13 +456,16 @@ async def run(source_key: str) -> dict[str, Any]:
             primary_provider="anthropic-sonnet",
             arun_kwargs={"images": [image]},
             doc_type=classification.doc_type,
+            prompt_version=prompt_version,
+            attempts_out=attempts,
         )
     except PydanticValidationError:
-        # No more retries possible — route to disagreement queue and
-        # propagate so the caller surfaces the failure. Story 6.1 inlines
-        # the raw response from the LAST attempt so reviewers can see
-        # exactly what the model emitted.
-        last_agent = captured_agents[-1] if captured_agents else None
+        # Retry exhausted (top-tier primary or escalated tier still failed).
+        # ``attempts`` was populated in-place by the helper before it
+        # raised; emit per-attempt telemetry rows + the disagreement-queue
+        # entry with the LAST attempt's raw response.
+        _emit_specialist_telemetry()
+        last_agent = attempts[-1].agent if attempts else None
         primary_raw = _read_run_response(last_agent)
         record_disagreement(
             source_key=source_key,
@@ -394,6 +486,8 @@ async def run(source_key: str) -> dict[str, Any]:
     _populate_pipeline_provenance(content, agent_name=meta.agent_name)
     extracted: Frontmatter = content
 
+    _emit_specialist_telemetry()
+
     # Story 3.7 (PaymentReceipt) → 4.4 (5 gated types): verifier audit
     # runs only on safety-critical specialists, using a single audit
     # prompt. The verifier receives the typed instance dump as JSON so
@@ -404,13 +498,34 @@ async def run(source_key: str) -> dict[str, Any]:
     if classification.doc_type in _VERIFIER_GATED_TYPES:
         verifier_input = json.dumps(content.model_dump(), ensure_ascii=False, indent=2)
         verifier_agent = create_verifier_agent()
+        verifier_start = time.monotonic()
         verifier_result = await verifier_agent.arun(verifier_input, images=[image])
+        verifier_latency_ms = (time.monotonic() - verifier_start) * 1000.0
         audit = verifier_result.content
         if not isinstance(audit, VerifierAudit):
             raise TypeError(
                 f"Verifier agent returned {type(audit).__name__}, expected VerifierAudit"
             )
         verifier_audit = audit
+
+        # P10 — emit a verifier telemetry row alongside the specialist's.
+        _, verifier_prompt_version = load_prompt("verifier")
+        _, verifier_meta = _read_run_response(verifier_agent)
+        verifier_cost = float(verifier_meta["cost_usd"])
+        cost_usd_total += verifier_cost
+        record_extraction(
+            source_key=source_key,
+            doc_type=classification.doc_type,
+            agent="verifier",
+            provider=verifier_meta["provider"],
+            model=verifier_meta["model"],
+            cost_usd=verifier_cost,
+            latency_ms=verifier_meta["latency_ms"] or verifier_latency_ms,
+            retry_count=0,
+            success=True,
+            prompt_version=verifier_prompt_version,
+            extractor_version=__version__,
+        )
 
     md_text = markdown_io.render_to_md(extracted)
     s3_io.write_analysis(analysis_key, md_text)
@@ -424,7 +539,7 @@ async def run(source_key: str) -> dict[str, Any]:
     # disagreement entry carries the full forensic payload.
     disagreement_key: str | None = None
     if verifier_audit is not None and verifier_audit.overall == "fail":
-        last_agent = captured_agents[-1] if captured_agents else None
+        last_agent = attempts[-1].agent if attempts else None
         primary_raw = _read_run_response(last_agent)
         verifier_raw = _read_run_response(verifier_agent)
         disagreement_key = record_disagreement(
@@ -444,4 +559,5 @@ async def run(source_key: str) -> dict[str, Any]:
         "verifier_audit": verifier_audit.model_dump() if verifier_audit is not None else None,
         "disagreement_key": disagreement_key,
         "retry_count": retry_count,
+        "cost_usd": cost_usd_total,
     }
