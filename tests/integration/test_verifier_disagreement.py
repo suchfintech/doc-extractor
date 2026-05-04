@@ -187,7 +187,10 @@ async def test_verifier_disagreement_inlines_both_raw_responses(
     )
 
     monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
-    monkeypatch.setattr(vision_path, "create_payment_receipt_agent", lambda: pr_agent)
+    # P2 (code review Round 1) routed specialist dispatch through
+    # ``vision_path.FACTORIES``; the per-symbol ``create_*_agent`` imports
+    # are gone from vision_path, so swap the FACTORIES entry instead.
+    monkeypatch.setitem(vision_path.FACTORIES, "PaymentReceipt", lambda: pr_agent)
     monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
 
     result = await vision_path.run(SOURCE_KEY)
@@ -253,7 +256,7 @@ async def test_raw_response_text_preserves_cjk_byte_equal(
     )
 
     monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
-    monkeypatch.setattr(vision_path, "create_payment_receipt_agent", lambda: pr_agent)
+    monkeypatch.setitem(vision_path.FACTORIES, "PaymentReceipt", lambda: pr_agent)
     monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
 
     await vision_path.run(SOURCE_KEY)
@@ -335,8 +338,8 @@ async def test_validation_failure_inlines_primary_raw_only(
     )
 
     monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
-    monkeypatch.setattr(
-        vision_path, "create_payment_receipt_agent", lambda: failing_pr_agent
+    monkeypatch.setitem(
+        vision_path.FACTORIES, "PaymentReceipt", lambda: failing_pr_agent
     )
     monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
 

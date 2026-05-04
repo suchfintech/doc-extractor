@@ -79,8 +79,14 @@ def mock_inline_pipeline(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock
     monkeypatch.setattr(
         extract_module, "create_classifier_agent", lambda: classifier_agent
     )
+    # P15 (code review Round 1) added a ``model`` parameter to every
+    # specialist factory; ``extract.py`` now calls
+    # ``create_passport_agent(provider=provider, model=model)``, so this
+    # mock needs to accept both kwargs.
     monkeypatch.setattr(
-        extract_module, "create_passport_agent", lambda provider=None: passport_agent
+        extract_module,
+        "create_passport_agent",
+        lambda provider=None, model=None: passport_agent,
     )
 
     return {"head": head, "presign": presign, "write": write}
