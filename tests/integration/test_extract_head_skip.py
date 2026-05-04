@@ -30,11 +30,19 @@ def _pipeline_result(key: str) -> dict[str, Any]:
 
 @pytest.fixture
 def mocked_pipeline(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
-    """Mock head_analysis (default False) and vision_path.run."""
+    """Mock head_analysis (default False) and vision_path.run.
+
+    P13 (code review Round 3) — extract.py no longer imports ``Image`` or
+    constructs one. The previous fixture booby-trapped ``extract_module.Image``
+    to assert "extract() never builds an Image" — moot now that the
+    inline path is gone (extract() always delegates to vision_path.run).
+    """
     head = MagicMock(return_value=False)
     image_calls = MagicMock()
 
-    async def fake_run(key: str) -> dict[str, Any]:
+    async def fake_run(key: str, **_: Any) -> dict[str, Any]:
+        # Accept **kwargs because P13 added provider/model/verbose/dry_run/
+        # show_image to vision_path.run's signature.
         image_calls(key)
         return _pipeline_result(key)
 
@@ -42,10 +50,6 @@ def mocked_pipeline(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
 
     monkeypatch.setattr(s3_io, "head_analysis", head)
     monkeypatch.setattr(vision_path, "run", pipeline_run)
-    monkeypatch.setattr(extract_module, "Image", MagicMock(side_effect=AssertionError(
-        "extract() should not construct an Image when HEAD-skip fires or when "
-        "the simple path delegates to vision_path.run"
-    )))
     return {"head": head, "pipeline": pipeline_run, "image_count": image_calls}
 
 
@@ -84,7 +88,10 @@ async def test_extract_proceeds_when_head_returns_false(
 
     mocked_pipeline["head"].assert_called_once_with(f"{KEY_FRESH}.md")
     assert mocked_pipeline["pipeline"].await_count == 1
-    mocked_pipeline["pipeline"].assert_awaited_once_with(KEY_FRESH)
+    # P13 — vision_path.run takes provider/model/verbose/dry_run/show_image
+    # kwargs (defaulting to None/False); extract() forwards them all.
+    call_args = mocked_pipeline["pipeline"].call_args
+    assert call_args.args == (KEY_FRESH,)
 
 
 @pytest.mark.asyncio
@@ -125,7 +132,9 @@ async def test_extract_batch_mixed_only_runs_pipeline_for_fresh_keys(
 
     assert mocked_pipeline["head"].call_count == 3
     assert mocked_pipeline["pipeline"].await_count == 1
-    mocked_pipeline["pipeline"].assert_awaited_with(KEY_FRESH)
+    # P13 — match positional source_key only; kwargs default through.
+    pipeline_call = mocked_pipeline["pipeline"].call_args
+    assert pipeline_call.args == (KEY_FRESH,)
 
 
 @pytest.mark.asyncio

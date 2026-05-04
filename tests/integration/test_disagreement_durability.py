@@ -410,3 +410,136 @@ def test_persisted_payload_matches_full_forensic_shape_post_crash(
     # ISO-8601 Z timestamp.
     assert isinstance(entry["timestamp"], str)
     assert entry["timestamp"].endswith("Z")
+
+
+# ---------------------------------------------------------------------------
+# P7 (code review Round 3) — write order: disagreement BEFORE analysis
+#
+# Pre-fix vision_path.run wrote ``analysis_key`` first and
+# ``record_disagreement`` second. If ``record_disagreement`` failed
+# (network blip, IAM glitch, etc.), the next idempotent retry would see
+# the analysis on S3, head_analysis would short-circuit, and the
+# disagreement entry would be permanently lost. P7 reverses the order.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_vision_path_writes_disagreement_before_analysis_on_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end ordering invariant: ``record_disagreement`` runs
+    BEFORE ``write_analysis`` when the verifier returns ``overall=='fail'``.
+    Pre-P7, the order was reversed and a partial-write could orphan the
+    disagreement entry across an idempotent retry."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from agno.agent import Agent
+
+    from doc_extractor.pipelines import vision_path
+    from doc_extractor.schemas.classification import Classification
+
+    # Single recorder ledger captures both writes in observed order.
+    write_order: list[str] = []
+
+    def fake_write_analysis(key: str, body: str | bytes) -> None:
+        write_order.append(f"analysis:{key}")
+
+    def fake_record(*, source_key: str, **_: Any) -> str:
+        write_order.append(f"disagreement:{source_key}")
+        return f"disagreements/{source_key}.json"
+
+    head = MagicMock(return_value=False)
+    head_src = MagicMock(return_value={"content_type": "image/jpeg", "size": 1024})
+    presign = MagicMock(return_value="https://example.invalid/url")
+    monkeypatch.setattr(s3_io, "head_analysis", head)
+    monkeypatch.setattr(s3_io, "head_source", head_src)
+    monkeypatch.setattr(s3_io, "get_presigned_url", presign)
+    monkeypatch.setattr(s3_io, "write_analysis", fake_write_analysis)
+    monkeypatch.setattr(vision_path, "record_disagreement", fake_record)
+    monkeypatch.setattr(vision_path, "record_extraction", lambda **_: None)
+
+    # Build mocks for classifier / specialist / verifier (verifier returns
+    # overall=='fail' so the disagreement path triggers).
+    def _agent(content: Any) -> Agent:
+        agent = MagicMock(spec=Agent)
+        agent.arun = AsyncMock(return_value=MagicMock(content=content))
+        agent.run_response = None
+        return agent
+
+    classifier = _agent(Classification(doc_type="PaymentReceipt", jurisdiction="CN"))
+    pr = _agent(_payment_receipt())
+    verifier = _agent(_failing_audit())
+
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier)
+    monkeypatch.setitem(vision_path.FACTORIES, "PaymentReceipt", lambda **_: pr)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda **_: verifier)
+
+    await vision_path.run(SOURCE_KEY)
+
+    # Disagreement MUST land first; if it doesn't, a partial write that
+    # corrupts the second step orphans the disagreement entry.
+    assert write_order == [
+        f"disagreement:{SOURCE_KEY}",
+        f"analysis:{SOURCE_KEY}.md",
+    ], write_order
+
+
+@pytest.mark.asyncio
+async def test_partial_write_failure_keeps_disagreement_for_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If ``write_analysis`` raises after ``record_disagreement`` succeeds,
+    the next idempotent retry sees no analysis (HEAD-skip doesn't fire),
+    re-runs the pipeline, and re-writes the disagreement (last-writer-wins
+    per Story 6.4). Pre-P7, the order was reversed so write_analysis
+    landed first; a record_disagreement failure orphaned the entry under
+    a HEAD-skip that fired on retry."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from agno.agent import Agent
+
+    from doc_extractor.pipelines import vision_path
+    from doc_extractor.schemas.classification import Classification
+
+    disagreement_calls: list[str] = []
+
+    def fake_record(*, source_key: str, **_: Any) -> str:
+        disagreement_calls.append(source_key)
+        return f"disagreements/{source_key}.json"
+
+    def crashing_write_analysis(key: str, body: str | bytes) -> None:
+        raise RuntimeError("S3 write_analysis failed mid-call")
+
+    head = MagicMock(return_value=False)
+    head_src = MagicMock(return_value={"content_type": "image/jpeg", "size": 1024})
+    presign = MagicMock(return_value="https://example.invalid/url")
+    monkeypatch.setattr(s3_io, "head_analysis", head)
+    monkeypatch.setattr(s3_io, "head_source", head_src)
+    monkeypatch.setattr(s3_io, "get_presigned_url", presign)
+    monkeypatch.setattr(s3_io, "write_analysis", crashing_write_analysis)
+    monkeypatch.setattr(vision_path, "record_disagreement", fake_record)
+    monkeypatch.setattr(vision_path, "record_extraction", lambda **_: None)
+
+    def _agent(content: Any) -> Agent:
+        agent = MagicMock(spec=Agent)
+        agent.arun = AsyncMock(return_value=MagicMock(content=content))
+        agent.run_response = None
+        return agent
+
+    classifier = _agent(Classification(doc_type="PaymentReceipt", jurisdiction="CN"))
+    pr = _agent(_payment_receipt())
+    verifier = _agent(_failing_audit())
+
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier)
+    monkeypatch.setitem(vision_path.FACTORIES, "PaymentReceipt", lambda **_: pr)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda **_: verifier)
+
+    with pytest.raises(RuntimeError, match="write_analysis failed"):
+        await vision_path.run(SOURCE_KEY)
+
+    # The disagreement was recorded BEFORE write_analysis crashed — so even
+    # though the run aborted, the queue entry persisted. The next retry
+    # will not see an analysis (it never landed), so HEAD-skip won't fire
+    # and the run will execute again — re-writing the same disagreement
+    # entry under the stable source_key path.
+    assert disagreement_calls == [SOURCE_KEY]

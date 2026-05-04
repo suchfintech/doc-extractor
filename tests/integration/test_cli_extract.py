@@ -55,19 +55,26 @@ def mock_pipeline(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
             "analysis_key": EXPECTED_ANALYSIS_KEY,
             "skipped": False,
             "doc_type": "Passport",
+            "cost_usd": 0.0,
         }
     )
     monkeypatch.setattr(vision_path, "run", run_mock)
+    monkeypatch.setattr(s3_io, "head_analysis", MagicMock(return_value=False))
     return {"run": run_mock}
 
 
 @pytest.fixture
 def mock_inline_pipeline(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
-    """Patch the inline orchestration deps for verbose / dry-run tests."""
+    """P13 (code review Round 3) — extract.py's inline path is gone;
+    verbose/dry-run/--provider/--model now flow through ``vision_path.run``.
+    This fixture patches vision_path's internal deps so a real run goes
+    through end-to-end without touching S3 or a provider."""
     head = MagicMock(return_value=False)
+    head_src = MagicMock(return_value={"content_type": "image/jpeg", "size": 1024})
     presign = MagicMock(return_value="https://example.invalid/presigned-url")
     write = MagicMock(return_value=None)
     monkeypatch.setattr(s3_io, "head_analysis", head)
+    monkeypatch.setattr(s3_io, "head_source", head_src)
     monkeypatch.setattr(s3_io, "get_presigned_url", presign)
     monkeypatch.setattr(s3_io, "write_analysis", write)
 
@@ -76,28 +83,42 @@ def mock_inline_pipeline(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock
     )
     passport_agent, _ = _make_async_agent(_passport_fixture())
 
-    monkeypatch.setattr(
-        extract_module, "create_classifier_agent", lambda: classifier_agent
-    )
-    # P15 (code review Round 1) added a ``model`` parameter to every
-    # specialist factory; ``extract.py`` now calls
-    # ``create_passport_agent(provider=provider, model=model)``, so this
-    # mock needs to accept both kwargs.
-    monkeypatch.setattr(
-        extract_module,
-        "create_passport_agent",
-        lambda provider=None, model=None: passport_agent,
+    # Verifier runs because Passport is in _VERIFIER_GATED_TYPES.
+    from doc_extractor.schemas.verifier import VerifierAudit
+
+    verifier_agent, _ = _make_async_agent(
+        VerifierAudit(field_audits={"passport_number": "agree"}, notes="ok")
     )
 
-    return {"head": head, "presign": presign, "write": write}
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
+    monkeypatch.setitem(vision_path.FACTORIES, "Passport", lambda **_: passport_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda **_: verifier_agent)
+    # vision_path emits telemetry as a side-effect; tests don't assert on
+    # it but the writer would create ``./telemetry/<date>.jsonl``. Stub it.
+    monkeypatch.setattr(vision_path, "record_extraction", lambda **_: None)
+
+    return {"head": head, "head_src": head_src, "presign": presign, "write": write}
 
 
 def test_extract_simple_path_exits_zero(
     mock_pipeline: dict[str, MagicMock], capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """``vision_path.run`` is invoked exactly once with the source key
+    plus the (default-None/False) override kwargs. P13 — extract.py
+    forwards every CLI flag through verbatim."""
     rc = cli.main(["extract", "--key", SOURCE_KEY])
     assert rc == cli.EXIT_OK
-    mock_pipeline["run"].assert_awaited_once_with(SOURCE_KEY)
+    assert mock_pipeline["run"].await_count == 1
+    call = mock_pipeline["run"].call_args
+    assert call.args == (SOURCE_KEY,)
+    # Defaults forwarded through extract() → vision_path.run().
+    assert call.kwargs == {
+        "provider": None,
+        "model": None,
+        "verbose": False,
+        "show_image": False,
+        "dry_run": False,
+    }
 
 
 def test_extract_verbose_prints_five_sections_in_order(
@@ -122,7 +143,9 @@ def test_extract_verbose_prints_five_sections_in_order(
         f"Verbose sections out of order: positions={positions}"
     )
 
-    assert "cost_usd=0.000" in out
+    # P12 — cost_usd no longer hardcoded to 0.000; the verbose section
+    # surfaces the rolled-up cost from agent run_response metadata.
+    assert "cost_usd=" in out
     assert "latency_ms=" in out
     mock_inline_pipeline["write"].assert_called_once()
 

@@ -227,3 +227,108 @@ async def test_with_rate_limit_retry_propagates_non_rate_limit_errors(
         await retry_module.with_rate_limit_retry(bad, max_retries=3, base_delay=0.001)
 
     assert len(attempts) == 1
+
+
+# ---------------------------------------------------------------------------
+# P9 (code review Round 3) — per-key rate-limit isolation in extract_batch
+#
+# Pre-fix, ``asyncio.gather`` without ``return_exceptions=True`` tore down
+# the whole batch when any single key exhausted ``with_rate_limit_retry``.
+# Decision 6 says route to disagreement queue with status="rate_limited"
+# — these tests pin both sides: the gather completes, the ratelimited key
+# surfaces as a sentinel, and the disagreement entry was written.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_extract_batch_isolates_rate_limit_failure_to_one_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One rate-limited key in a batch of three must NOT fail the other
+    two — the gather completes, the ratelimited key returns a sentinel
+    ExtractedDoc(skipped=False, doc_type=None), and the surrounding
+    successes pass through intact."""
+    rate_limited_key = "passports/rate-limited.jpeg"
+
+    async def fake_extract(key: str) -> ExtractedDoc:
+        if key == rate_limited_key:
+            raise ModelRateLimitError("rate limited", model_id="claude-sonnet")
+        return _doc(key)
+
+    monkeypatch.setattr(batch_runtime, "extract", fake_extract)
+    # Use a real with_rate_limit_retry with max_retries=1 so the rate-limit
+    # error propagates immediately (no backoff sleep in tests).
+    monkeypatch.setattr(
+        batch_runtime,
+        "with_rate_limit_retry",
+        lambda factory, **_: factory(),
+    )
+
+    disagreement_calls: list[dict[str, Any]] = []
+
+    def fake_record(**kwargs: Any) -> str:
+        disagreement_calls.append(kwargs)
+        return f"disagreements/{kwargs['source_key']}.json"
+
+    monkeypatch.setattr(batch_runtime, "record_disagreement", fake_record)
+
+    keys = ["passports/ok-1.jpeg", rate_limited_key, "passports/ok-2.jpeg"]
+    results = await batch_module.extract_batch(keys, max_concurrent=3)
+
+    # All three results returned in input order (gather didn't tear down).
+    assert [r.key for r in results] == keys
+    assert results[0].skipped is False and results[0].doc_type == "Passport"
+    assert results[2].skipped is False and results[2].doc_type == "Passport"
+
+    # The rate-limited key surfaces as a sentinel (Decision 6 shape).
+    sentinel = results[1]
+    assert sentinel.key == rate_limited_key
+    assert sentinel.skipped is False
+    assert sentinel.doc_type is None
+    assert sentinel.cost_usd == 0.0
+
+    # And the disagreement queue captured the rate_limited event.
+    assert len(disagreement_calls) == 1
+    call = disagreement_calls[0]
+    assert call["source_key"] == rate_limited_key
+    assert call["status"] == "rate_limited"
+    assert call["primary"] is None
+    assert call["verifier"] is None
+
+
+@pytest.mark.asyncio
+async def test_extract_batch_handles_all_keys_rate_limited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When EVERY key in the batch hits the rate-limit ceiling, the gather
+    still completes — every result is a sentinel ExtractedDoc, every key
+    routed to the disagreement queue. The batch as a whole is recoverable
+    via re-run after backoff (each key independently HEAD-skip-evaluates)."""
+
+    async def always_rate_limited(key: str) -> ExtractedDoc:
+        raise ModelRateLimitError("rate limited", model_id="claude-sonnet")
+
+    monkeypatch.setattr(batch_runtime, "extract", always_rate_limited)
+    monkeypatch.setattr(
+        batch_runtime,
+        "with_rate_limit_retry",
+        lambda factory, **_: factory(),
+    )
+
+    queue_calls: list[str] = []
+    monkeypatch.setattr(
+        batch_runtime,
+        "record_disagreement",
+        lambda **kw: queue_calls.append(kw["source_key"]) or f"d/{kw['source_key']}.json",
+    )
+
+    keys = [f"k-{i}" for i in range(5)]
+    results = await batch_module.extract_batch(keys, max_concurrent=3)
+
+    assert len(results) == 5
+    # Every result is a sentinel (skipped=False, doc_type=None).
+    for r in results:
+        assert r.skipped is False
+        assert r.doc_type is None
+    # Every key got a queue entry.
+    assert sorted(queue_calls) == sorted(keys)

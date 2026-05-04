@@ -91,6 +91,40 @@ _ESCALATION: dict[str, dict[str, str]] = {
     "openai": {"gpt-4o-mini": "gpt-4o"},
 }
 
+# P8 (code review Round 3) — keyword inventory for ``tier_for_config``.
+# Maps a provider to the substrings that identify a tier inside a full
+# model id (e.g. ``claude-haiku-4-5-20251001`` → ``haiku``). Listed
+# longest-first so ``gpt-4o-mini`` matches before ``gpt-4o`` would
+# spuriously match its prefix. Mirrors the keys of ``_ESCALATION``.
+_TIER_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "anthropic": ("sonnet", "haiku"),
+    "openai": ("gpt-4o-mini", "gpt-4o"),
+}
+
+
+def tier_for_config(provider: str, model_id: str) -> str:
+    """Map ``(provider, model_id)`` → the tier string the retry helper
+    expects for ``primary_provider``.
+
+    P8 closed a bug where ``vision_path.run`` hardcoded
+    ``primary_provider="anthropic-sonnet"`` regardless of the resolved
+    AgentConfig — Sonnet is top-tier so escalation was permanently
+    dead. This helper derives the right tier from the config so a
+    Haiku-default agent (``Other``, ``classifier``) can actually
+    escalate to Sonnet on a validation failure.
+
+    Unknown ``provider`` / no keyword match → returns
+    ``f"{provider}-{model_id}"`` (the verbatim shape). The retry
+    helper's ``_escalate`` returns ``None`` for unrecognised tiers, so
+    an unknown shape just behaves as "no escalation" without crashing.
+    """
+    keywords = _TIER_KEYWORDS.get(provider, ())
+    # Iterate longest-first so a more specific keyword wins over a prefix.
+    for kw in sorted(keywords, key=len, reverse=True):
+        if kw in model_id:
+            return f"{provider}-{kw}"
+    return f"{provider}-{model_id}"
+
 
 def _split_tier(tier: str) -> tuple[str, str]:
     """``"anthropic-haiku"`` → ``("anthropic", "haiku")``.

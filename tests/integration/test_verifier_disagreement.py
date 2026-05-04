@@ -198,12 +198,12 @@ async def test_verifier_disagreement_inlines_both_raw_responses(
         metadata=verifier_metadata,
     )
 
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
     # P2 (code review Round 1) routed specialist dispatch through
     # ``vision_path.FACTORIES``; the per-symbol ``create_*_agent`` imports
     # are gone from vision_path, so swap the FACTORIES entry instead.
-    monkeypatch.setitem(vision_path.FACTORIES, "PaymentReceipt", lambda: pr_agent)
-    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+    monkeypatch.setitem(vision_path.FACTORIES, "PaymentReceipt", lambda **_: pr_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda **_: verifier_agent)
 
     result = await vision_path.run(SOURCE_KEY)
 
@@ -267,9 +267,9 @@ async def test_raw_response_text_preserves_cjk_byte_equal(
         metadata={"provider": "anthropic", "model": "sonnet", "latency_ms": 1.0, "cost_usd": 0.01},
     )
 
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
-    monkeypatch.setitem(vision_path.FACTORIES, "PaymentReceipt", lambda: pr_agent)
-    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
+    monkeypatch.setitem(vision_path.FACTORIES, "PaymentReceipt", lambda **_: pr_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda **_: verifier_agent)
 
     await vision_path.run(SOURCE_KEY)
 
@@ -354,11 +354,11 @@ async def test_validation_failure_inlines_primary_raw_only(
         metadata={"provider": "", "model": "", "latency_ms": 0.0, "cost_usd": 0.0},
     )
 
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
     monkeypatch.setitem(
-        vision_path.FACTORIES, "PaymentReceipt", lambda: failing_pr_agent
+        vision_path.FACTORIES, "PaymentReceipt", lambda **_: failing_pr_agent
     )
-    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda **_: verifier_agent)
 
     with pytest.raises(ValidationError):
         await vision_path.run(SOURCE_KEY)

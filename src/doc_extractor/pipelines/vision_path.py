@@ -30,6 +30,7 @@ from doc_extractor.agents.registry import FACTORIES
 from doc_extractor.agents.retry import (
     AttemptRecord,
     _split_tier,
+    tier_for_config,
     with_validation_retry,
 )
 from doc_extractor.agents.verifier import create_verifier_agent
@@ -315,12 +316,18 @@ def _populate_pipeline_provenance(
         extracted.prompt_version = prompt_version
 
 
-def _build_image_for_source(source_key: str) -> Image:
+def _build_image_for_source(
+    source_key: str, *, print_presigned_url: bool = False
+) -> Image:
     """Return the ``agno.media.Image`` primitive for ``source_key``.
 
     PDFs go through ``pdf_to_images(..., mode="page1")`` and are passed as
     raw PNG bytes via ``Image(content=...)``. Native images stay on the
     fast path with a presigned URL via ``Image(url=...)``.
+
+    When ``print_presigned_url=True`` (CLI ``--show-image`` flag), the
+    presigned URL is printed to stdout — only meaningful on the
+    non-PDF fast path. PDFs read raw bytes locally and don't presign.
     """
     metadata = s3_io.head_source(source_key)
     content_type = str(metadata.get("content_type") or "")
@@ -330,10 +337,24 @@ def _build_image_for_source(source_key: str) -> Image:
         return Image(content=png_pages[0])
 
     presigned_url = s3_io.get_presigned_url(s3_io.SOURCE_BUCKET, source_key)
+    if print_presigned_url:
+        print(f"presigned_url: {presigned_url}")
     return Image(url=presigned_url)
 
 
-async def run(source_key: str) -> dict[str, Any]:
+def _section(title: str) -> None:
+    print(f"=== {title} ===")
+
+
+async def run(
+    source_key: str,
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    verbose: bool = False,
+    show_image: bool = False,
+    dry_run: bool = False,
+) -> dict[str, Any]:
     """Process a single source document end-to-end.
 
     Returns a result dict with ``analysis_key``, ``skipped`` (HEAD-skip
@@ -350,6 +371,20 @@ async def run(source_key: str) -> dict[str, Any]:
     attempt + one for the HEAD-skip case + one for the verifier when run.
     Cost telemetry rolls up into the result dict so the eval harness can
     read it back via ``ExtractedDoc.cost_usd`` (P12).
+
+    P13 (code review Round 3) — accepts the CLI's introspection /
+    override flags directly so ``extract.py`` no longer needs an inline
+    orchestration path:
+
+    * ``provider``/``model`` thread through the classifier, specialist,
+      and verifier factory calls as CLI overrides (precedence chain
+      still applies — explicit > env > YAML > per-class fallback).
+    * ``show_image=True`` prints the source's presigned URL.
+    * ``dry_run=True`` prints the rendered ``.md`` to stdout instead of
+      writing to S3.
+    * ``verbose=True`` prints the five forensic sections (FR51) —
+      resolved prompt / raw model response / Pydantic validation /
+      rendered .md / cost telemetry.
     """
     analysis_key = _analysis_key_for(source_key)
 
@@ -382,9 +417,9 @@ async def run(source_key: str) -> dict[str, Any]:
             "cost_usd": 0.0,
         }
 
-    image = _build_image_for_source(source_key)
+    image = _build_image_for_source(source_key, print_presigned_url=show_image)
 
-    classifier = create_classifier_agent()
+    classifier = create_classifier_agent(provider=provider, model=model)
     classifier_result = await classifier.arun(CLASSIFIER_INPUT, images=[image])
     classification = classifier_result.content
     if not isinstance(classification, Classification):
@@ -406,6 +441,14 @@ async def run(source_key: str) -> dict[str, Any]:
     # retry helper hardcoded ``prompt_version=""`` on every record.
     _, prompt_version = load_prompt(meta.agent_name)
 
+    # P8 — derive the retry helper's primary_provider tier from the
+    # actual resolved AgentConfig instead of the hardcoded
+    # ``"anthropic-sonnet"`` (which made escalation dead for every
+    # specialist that already defaults to Sonnet, and silently bypassed
+    # escalation for Haiku-default agents like ``Other``).
+    specialist_config = resolve_agent_config(meta.agent_name)
+    primary_tier = tier_for_config(specialist_config.provider, specialist_config.model)
+
     cost_usd_total = 0.0
     # P10 — pass a fresh attempts list to the retry helper so we can
     # iterate per-attempt telemetry rows on BOTH the success and the
@@ -415,11 +458,13 @@ async def run(source_key: str) -> dict[str, Any]:
 
     # The retry helper calls ``agent_factory(tier)`` with the tier string,
     # but FACTORIES entries are ``create_X_agent(provider=None, model=None)``
-    # which only accept keyword args. Wrap to discard the tier — the
-    # factory builds the same specialist regardless; tier is informational
-    # for the retry helper's own bookkeeping (and the AttemptRecord).
+    # which only accept keyword args. Wrap to discard the tier and forward
+    # the CLI provider/model overrides through to the specialist factory.
+    # Tier is informational for the retry helper's own bookkeeping (and
+    # the AttemptRecord) — the factory builds the same specialist
+    # regardless of which retry tier prompted the call.
     def _retry_factory(_tier: str) -> Agent:
-        return factory()
+        return factory(provider=provider, model=model)
 
     def _emit_specialist_telemetry() -> None:
         nonlocal cost_usd_total
@@ -453,7 +498,7 @@ async def run(source_key: str) -> dict[str, Any]:
             meta.input_text,
             agent_name=meta.agent_name,
             source_key=source_key,
-            primary_provider="anthropic-sonnet",
+            primary_provider=primary_tier,
             arun_kwargs={"images": [image]},
             doc_type=classification.doc_type,
             prompt_version=prompt_version,
@@ -497,7 +542,7 @@ async def run(source_key: str) -> dict[str, Any]:
     verifier_agent: Agent | None = None
     if classification.doc_type in _VERIFIER_GATED_TYPES:
         verifier_input = json.dumps(content.model_dump(), ensure_ascii=False, indent=2)
-        verifier_agent = create_verifier_agent()
+        verifier_agent = create_verifier_agent(provider=provider, model=model)
         verifier_start = time.monotonic()
         verifier_result = await verifier_agent.arun(verifier_input, images=[image])
         verifier_latency_ms = (time.monotonic() - verifier_start) * 1000.0
@@ -527,13 +572,21 @@ async def run(source_key: str) -> dict[str, Any]:
             extractor_version=__version__,
         )
 
-    md_text = markdown_io.render_to_md(extracted)
-    s3_io.write_analysis(analysis_key, md_text)
-
-    # Story 3.9 — write a disagreement-queue entry when the verifier flagged
-    # ≥1 field as `disagree` (overall=="fail"). `uncertain` is NOT written:
-    # downstream surfaces it as advisory only. Non-gated types never reach
-    # this branch (verifier_audit stays None).
+    # P7 (code review Round 3) — write the disagreement entry BEFORE the
+    # analysis. If write_analysis succeeds but record_disagreement fails
+    # (network blip / IAM glitch), the next idempotent retry sees the
+    # analysis on S3, head_analysis returns True, and the disagreement
+    # entry is permanently lost. Reversing the order means a partial
+    # write either leaves no analysis (next retry re-runs the whole
+    # pipeline + re-writes the disagreement) or leaves both — the latter
+    # is the desired terminal state. record_disagreement is idempotent
+    # per Story 6.4 (last-writer-wins on stable source_key path), so
+    # re-running is safe.
+    #
+    # Story 3.9 — write a disagreement-queue entry when the verifier
+    # flagged ≥1 field as `disagree` (overall=="fail"). `uncertain` is
+    # NOT written: downstream surfaces it as advisory only. Non-gated
+    # types never reach this branch (verifier_audit stays None).
     # Story 6.1 — inline the raw responses from the successful specialist
     # call (last agent the retry layer used) and the verifier call so the
     # disagreement entry carries the full forensic payload.
@@ -550,6 +603,39 @@ async def run(source_key: str) -> dict[str, Any]:
             extractor_version=__version__,
             primary_raw=primary_raw,
             verifier_raw=verifier_raw,
+        )
+
+    md_text = markdown_io.render_to_md(extracted)
+    if dry_run:
+        # P13 — print the rendered .md instead of writing to S3 so the
+        # CLI's --dry-run flag can preview output without touching the
+        # analysis bucket. Verbose mode prints the .md inside section 4
+        # below, so suppress the duplicate here.
+        if not verbose:
+            print(md_text)
+    else:
+        s3_io.write_analysis(analysis_key, md_text)
+
+    if verbose:
+        # P13/FR51 — five forensic sections in order. The raw model
+        # response comes from the LAST specialist attempt (Sonnet on
+        # retry-success, primary on first-try) via _read_run_response.
+        last_agent = attempts[-1].agent if attempts else None
+        last_text, last_meta = _read_run_response(last_agent)
+        prompt_text, _ = load_prompt(meta.agent_name)
+        _section("1. Resolved prompt text")
+        print(prompt_text)
+        _section("2. Raw model response")
+        print(last_text or "(no raw model text on agent.run_response)")
+        _section("3. Pydantic validation result")
+        print(extracted.model_dump())
+        _section("4. Rendered .md content")
+        print(md_text)
+        _section("5. Cost telemetry")
+        model_id = last_meta["model"] or model or "<resolved-by-config>"
+        print(
+            f"cost_usd={cost_usd_total:.4f} latency_ms={last_meta['latency_ms']:.0f} "
+            f"model={model_id}"
         )
 
     return {

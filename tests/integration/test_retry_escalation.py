@@ -337,3 +337,94 @@ async def test_attempts_out_optional_for_callers_that_dont_care() -> None:
     )
     assert content is receipt
     assert retry_count == 0
+
+
+# ---------------------------------------------------------------------------
+# P8 (code review Round 3) — tier_for_config maps AgentConfig to retry tier
+#
+# Pre-fix vision_path.run hardcoded ``primary_provider="anthropic-sonnet"``,
+# which permanently disabled escalation for every Sonnet-default specialist
+# AND silently bypassed escalation for Haiku-default agents (Other,
+# classifier). ``tier_for_config`` derives the right tier from the
+# resolved AgentConfig so escalation actually fires when it should.
+# ---------------------------------------------------------------------------
+
+
+def test_tier_for_config_anthropic_sonnet_full_id() -> None:
+    """Sonnet-default specialist (Passport, PaymentReceipt, etc.) maps to
+    the ``anthropic-sonnet`` tier — _escalate returns None for that, so
+    a validation_failure on Sonnet propagates immediately (correct: no
+    higher tier to escalate to)."""
+    from doc_extractor.agents.retry import tier_for_config
+
+    assert tier_for_config("anthropic", "claude-sonnet-4-6-20260101") == "anthropic-sonnet"
+
+
+def test_tier_for_config_anthropic_haiku_full_id() -> None:
+    """Haiku-default specialist (Other, classifier) maps to the
+    ``anthropic-haiku`` tier — _escalate returns ``anthropic-sonnet`` for
+    that, so a validation_failure on Haiku triggers retry on Sonnet."""
+    from doc_extractor.agents.retry import tier_for_config
+
+    assert tier_for_config("anthropic", "claude-haiku-4-5-20251001") == "anthropic-haiku"
+
+
+def test_tier_for_config_openai_mini_does_not_match_full() -> None:
+    """``gpt-4o-mini`` is a substring of any ``gpt-4o-mini-*`` full id, but
+    must NOT match ``gpt-4o-2025-12-15`` (no "mini"). Longest-first sort
+    in tier_for_config prevents the wrong-tier collision."""
+    from doc_extractor.agents.retry import tier_for_config
+
+    assert tier_for_config("openai", "gpt-4o-mini-2025-12-15") == "openai-gpt-4o-mini"
+    assert tier_for_config("openai", "gpt-4o-2025-12-15") == "openai-gpt-4o"
+
+
+def test_tier_for_config_unknown_provider_returns_verbatim_shape() -> None:
+    """Unknown provider → return ``f"{provider}-{model_id}"``. The retry
+    helper's ``_escalate`` returns None for unrecognised tiers, so this
+    is effectively "no escalation" without raising."""
+    from doc_extractor.agents.retry import _escalate, tier_for_config
+
+    tier = tier_for_config("dashscope", "qwen-vl-plus-2024-09-01")
+    assert tier == "dashscope-qwen-vl-plus-2024-09-01"
+    assert _escalate(tier) is None  # safe — no spurious escalation
+
+
+@pytest.mark.asyncio
+async def test_haiku_default_agent_actually_escalates_to_sonnet_via_tier_for_config() -> None:
+    """End-to-end P8: a Haiku-default agent (e.g. Other, classifier) whose
+    primary_provider is derived from ``tier_for_config("anthropic",
+    "claude-haiku-4-5-20251001")`` actually escalates to Sonnet on a
+    PydanticValidationError. Pre-P8, the hardcoded ``anthropic-sonnet``
+    primary meant Haiku never got the chance to escalate."""
+    from doc_extractor.agents.retry import tier_for_config
+
+    receipt = _payment_receipt_fixture()
+    err = _pydantic_validation_error()
+
+    haiku_agent, _ = _failing_agent(err)
+    sonnet_agent, _ = _success_agent(receipt)
+
+    factory_calls: list[str] = []
+
+    def factory(tier: str) -> Agent:
+        factory_calls.append(tier)
+        return haiku_agent if tier == "anthropic-haiku" else sonnet_agent
+
+    primary_tier = tier_for_config("anthropic", "claude-haiku-4-5-20251001")
+    content, retry_count = await with_validation_retry(
+        factory,
+        "Extract.",
+        agent_name="other",
+        source_key="doc-haiku-fallback.jpeg",
+        primary_provider=primary_tier,
+        arun_kwargs={"images": [object()]},
+        doc_type="Other",
+    )
+
+    assert content is receipt
+    assert retry_count == 1
+    # Two-step escalation: Haiku (failed) → Sonnet (succeeded). Pre-fix
+    # this would have been ["anthropic-sonnet"] only — no escalation
+    # because Sonnet is top-tier.
+    assert factory_calls == ["anthropic-haiku", "anthropic-sonnet"]

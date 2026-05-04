@@ -60,8 +60,13 @@ def _patch_factory(
 
     Replaces the previous pattern of patching ``vision_path.create_X_agent``
     by name; vision_path no longer imports those symbols directly — it
-    dispatches via the ``FACTORIES`` registry."""
-    monkeypatch.setitem(vision_path.FACTORIES, doc_type, lambda: agent)
+    dispatches via the ``FACTORIES`` registry.
+
+    P13 — vision_path's ``_retry_factory`` calls ``factory(provider=..., model=...)``
+    forwarding the CLI overrides; the lambda accepts ``**kwargs`` so the
+    overrides flow through transparently. Tests that want to assert the
+    overrides reached the factory should patch with their own thunk."""
+    monkeypatch.setitem(vision_path.FACTORIES, doc_type, lambda **_: agent)
 
 
 @pytest.fixture
@@ -105,11 +110,11 @@ async def test_happy_path_writes_passport_markdown(
     )
 
     monkeypatch.setattr(
-        vision_path, "create_classifier_agent", lambda: classifier_agent
+        vision_path, "create_classifier_agent", lambda **_: classifier_agent
     )
     _patch_factory(monkeypatch, "Passport", passport_agent)
     monkeypatch.setattr(
-        vision_path, "create_verifier_agent", lambda: verifier_agent
+        vision_path, "create_verifier_agent", lambda **_: verifier_agent
     )
 
     result = await vision_path.run(SOURCE_KEY)
@@ -148,7 +153,7 @@ async def test_head_skip_short_circuits_before_provider(
     classifier_agent, classifier_arun = _make_async_agent(content=None)
 
     monkeypatch.setattr(
-        vision_path, "create_classifier_agent", lambda: classifier_agent
+        vision_path, "create_classifier_agent", lambda **_: classifier_agent
     )
 
     result = await vision_path.run(SOURCE_KEY)
@@ -196,11 +201,11 @@ async def test_pdf_source_routes_through_pdf_to_images(
         VerifierAudit(field_audits={"passport_number": "agree"})
     )
     monkeypatch.setattr(
-        vision_path, "create_classifier_agent", lambda: classifier_agent
+        vision_path, "create_classifier_agent", lambda **_: classifier_agent
     )
     _patch_factory(monkeypatch, "Passport", passport_agent)
     monkeypatch.setattr(
-        vision_path, "create_verifier_agent", lambda: verifier_agent
+        vision_path, "create_verifier_agent", lambda **_: verifier_agent
     )
 
     result = await vision_path.run(PDF_SOURCE_KEY)
@@ -273,9 +278,9 @@ async def test_verifier_runs_when_classification_is_payment_receipt(
     pr_agent, pr_arun = _make_async_agent(_payment_receipt_fixture())
     verifier_agent, verifier_arun = _make_async_agent(_verifier_audit_fixture("pass"))
 
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
     _patch_factory(monkeypatch, "PaymentReceipt", pr_agent)
-    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda **_: verifier_agent)
 
     result = await vision_path.run(PR_SOURCE_KEY)
 
@@ -309,9 +314,9 @@ async def test_verifier_fail_verdict_propagates_to_result_dict(
     pr_agent, _ = _make_async_agent(_payment_receipt_fixture())
     verifier_agent, _ = _make_async_agent(_verifier_audit_fixture("fail"))
 
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
     _patch_factory(monkeypatch, "PaymentReceipt", pr_agent)
-    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda **_: verifier_agent)
 
     result = await vision_path.run(PR_SOURCE_KEY)
 
@@ -331,9 +336,9 @@ async def test_verifier_runs_on_passport_classification(
     passport_agent, _ = _make_async_agent(_passport_fixture())
     verifier_agent, verifier_arun = _make_async_agent(_verifier_audit_fixture())
 
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
     _patch_factory(monkeypatch, "Passport", passport_agent)
-    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda **_: verifier_agent)
 
     result = await vision_path.run(SOURCE_KEY)
 
@@ -379,9 +384,9 @@ async def test_disagreement_written_when_verifier_overall_is_fail(
     pr_agent, _ = _make_async_agent(_payment_receipt_fixture())
     verifier_agent, _ = _make_async_agent(_verifier_audit_fixture("fail"))
 
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
     _patch_factory(monkeypatch, "PaymentReceipt", pr_agent)
-    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda **_: verifier_agent)
 
     result = await vision_path.run(PR_SOURCE_KEY)
 
@@ -410,9 +415,9 @@ async def test_disagreement_NOT_written_when_verifier_overall_is_pass(
     pr_agent, _ = _make_async_agent(_payment_receipt_fixture())
     verifier_agent, _ = _make_async_agent(_verifier_audit_fixture("pass"))
 
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
     _patch_factory(monkeypatch, "PaymentReceipt", pr_agent)
-    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda **_: verifier_agent)
 
     result = await vision_path.run(PR_SOURCE_KEY)
 
@@ -434,9 +439,9 @@ async def test_disagreement_NOT_written_when_verifier_overall_is_uncertain(
     pr_agent, _ = _make_async_agent(_payment_receipt_fixture())
     verifier_agent, _ = _make_async_agent(_verifier_audit_fixture("uncertain"))
 
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
     _patch_factory(monkeypatch, "PaymentReceipt", pr_agent)
-    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda **_: verifier_agent)
 
     result = await vision_path.run(PR_SOURCE_KEY)
 
@@ -460,9 +465,9 @@ async def test_disagreement_NOT_written_for_passport_when_verifier_passes(
     passport_agent, _ = _make_async_agent(_passport_fixture())
     verifier_agent, _ = _make_async_agent(_verifier_audit_fixture("pass"))
 
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
     _patch_factory(monkeypatch, "Passport", passport_agent)
-    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda **_: verifier_agent)
 
     result = await vision_path.run(SOURCE_KEY)
 
@@ -503,7 +508,7 @@ async def test_validation_failure_writes_disagreement_with_status_validation_fai
     classifier_agent, _ = _make_async_agent(
         Classification(doc_type="PaymentReceipt", jurisdiction="CN")
     )
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
 
     err = _pydantic_validation_error()
 
@@ -547,8 +552,8 @@ async def test_retry_count_propagates_to_result_dict(
     )
     verifier_agent, _ = _make_async_agent(_verifier_audit_fixture("pass"))
 
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
-    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda **_: verifier_agent)
 
     receipt = _payment_receipt_fixture()
 
@@ -622,9 +627,9 @@ async def test_verifier_runs_on_driver_licence_classification(
     dl_agent, dl_arun = _make_async_agent(dl)
     verifier_agent, verifier_arun = _make_async_agent(_verifier_audit_fixture("pass"))
 
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
     _patch_factory(monkeypatch, "DriverLicence", dl_agent)
-    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda **_: verifier_agent)
 
     result = await vision_path.run(SOURCE_KEY)
 
@@ -649,9 +654,9 @@ async def test_verifier_runs_on_national_id_classification(
     nid_agent, nid_arun = _make_async_agent(nid)
     verifier_agent, verifier_arun = _make_async_agent(_verifier_audit_fixture("pass"))
 
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
     _patch_factory(monkeypatch, "NationalID", nid_agent)
-    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda **_: verifier_agent)
 
     result = await vision_path.run(SOURCE_KEY)
 
@@ -676,9 +681,9 @@ async def test_verifier_runs_on_visa_classification(
     visa_agent, visa_arun = _make_async_agent(visa)
     verifier_agent, verifier_arun = _make_async_agent(_verifier_audit_fixture("pass"))
 
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
     _patch_factory(monkeypatch, "Visa", visa_agent)
-    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda **_: verifier_agent)
 
     result = await vision_path.run(SOURCE_KEY)
 
@@ -706,9 +711,9 @@ async def test_verifier_failure_on_driver_licence_writes_disagreement(
     dl_agent, _ = _make_async_agent(_driver_licence_fixture())
     verifier_agent, _ = _make_async_agent(_verifier_audit_fixture("fail"))
 
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
     _patch_factory(monkeypatch, "DriverLicence", dl_agent)
-    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda **_: verifier_agent)
 
     result = await vision_path.run(SOURCE_KEY)
 
@@ -775,9 +780,9 @@ async def test_raw_responses_propagate_to_record_disagreement_on_fail(
     verifier_agent.arun = AsyncMock(return_value=ver_run_response)
     verifier_agent.run_response = ver_run_response
 
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
     _patch_factory(monkeypatch, "PaymentReceipt", pr_agent)
-    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda **_: verifier_agent)
 
     await vision_path.run(PR_SOURCE_KEY)
 
@@ -862,9 +867,9 @@ async def test_dispatches_bank_statement_via_factories_no_verifier(
     # Bind a verifier mock so we can assert it was NEVER called.
     verifier_agent, verifier_arun = _make_async_agent(_verifier_audit_fixture("pass"))
 
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
     _patch_factory(monkeypatch, "BankStatement", bs_agent)
-    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda **_: verifier_agent)
 
     result = await vision_path.run(SOURCE_KEY)
 
@@ -892,9 +897,9 @@ async def test_dispatches_company_extract_via_factories_no_verifier(
     ce_agent, ce_arun = _make_async_agent(_company_extract_fixture())
     verifier_agent, verifier_arun = _make_async_agent(_verifier_audit_fixture("pass"))
 
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
     _patch_factory(monkeypatch, "CompanyExtract", ce_agent)
-    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda **_: verifier_agent)
 
     result = await vision_path.run(SOURCE_KEY)
 
@@ -922,9 +927,9 @@ async def test_dispatches_other_via_factories_no_verifier(
     other_agent, other_arun = _make_async_agent(_other_fixture())
     verifier_agent, verifier_arun = _make_async_agent(_verifier_audit_fixture("pass"))
 
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
     _patch_factory(monkeypatch, "Other", other_agent)
-    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda **_: verifier_agent)
 
     result = await vision_path.run(SOURCE_KEY)
 
@@ -1101,7 +1106,7 @@ async def test_telemetry_emitted_on_successful_specialist_extraction(
         Classification(doc_type="BankStatement", jurisdiction="NZ")
     )
     bs_agent, _ = _make_async_agent(_bank_statement_fixture())
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
     _patch_factory(monkeypatch, "BankStatement", bs_agent)
 
     await vision_path.run(SOURCE_KEY)
@@ -1133,7 +1138,7 @@ async def test_telemetry_emitted_on_validation_failure_path(
     classifier_agent, _ = _make_async_agent(
         Classification(doc_type="PaymentReceipt", jurisdiction="CN")
     )
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
 
     err = _pydantic_validation_error()
 
@@ -1192,7 +1197,7 @@ async def test_telemetry_emitted_on_head_skip_path(
     (classifier didn't run)."""
     patched_io["head"].return_value = True
     classifier_agent, classifier_arun = _make_async_agent(content=None)
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
 
     result = await vision_path.run(SOURCE_KEY)
 
@@ -1223,9 +1228,9 @@ async def test_telemetry_emits_verifier_row_when_gated(
     pr_agent, _ = _make_async_agent(_payment_receipt_fixture())
     verifier_agent, _ = _make_async_agent(_verifier_audit_fixture("pass"))
 
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
     _patch_factory(monkeypatch, "PaymentReceipt", pr_agent)
-    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda **_: verifier_agent)
 
     await vision_path.run(PR_SOURCE_KEY)
 
@@ -1277,9 +1282,9 @@ async def test_cost_usd_aggregates_across_specialist_and_verifier(
     verifier_agent.arun = AsyncMock(return_value=ver_run_output)
     verifier_agent.run_response = ver_run_output
 
-    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda: classifier_agent)
+    monkeypatch.setattr(vision_path, "create_classifier_agent", lambda **_: classifier_agent)
     _patch_factory(monkeypatch, "PaymentReceipt", pr_agent)
-    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda: verifier_agent)
+    monkeypatch.setattr(vision_path, "create_verifier_agent", lambda **_: verifier_agent)
 
     result = await vision_path.run(PR_SOURCE_KEY)
     assert result["cost_usd"] == pytest.approx(0.05)
