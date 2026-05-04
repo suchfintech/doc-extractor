@@ -6,14 +6,30 @@ ever drift in a way that mangles either, this test fails.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+import yaml  # type: ignore[import-untyped]
 
 from doc_extractor.markdown_io import parse_md, render_to_md
 from doc_extractor.schemas import (
+    ApplicationForm,
+    BankAccountConfirmation,
+    BankStatement,
+    CompanyExtract,
+    DriverLicence,
     EntityOwnership,
     Frontmatter,
+    NationalID,
+    Other,
     Passport,
+    PaymentReceipt,
+    PEP_Declaration,
+    ProofOfAddress,
+    TaxResidency,
     UltimateBeneficialOwner,
+    VerificationReport,
+    Visa,
 )
 
 
@@ -181,3 +197,72 @@ def test_entity_ownership_round_trip_preserves_verbatim_ownership_percentage() -
     assert isinstance(parsed, EntityOwnership)
     assert parsed.ultimate_beneficial_owners is not None
     assert parsed.ultimate_beneficial_owners[1].ownership_percentage == "approximately 40%"
+
+
+# --------------------------------------------------------------------------
+# Parametrised round-trip across all 15 DOC_TYPES schemas (review-fix R1).
+#
+# Each canonical instance is sourced from the byte-stable snapshot fixture
+# at `tests/unit/schema_snapshots/<name>.yaml` (Story 7.2). For every
+# schema we assert:
+#
+#   * `parse_md(render_to_md(instance)) == instance`        — round-trip
+#   * `type(parse_md(...)) is schema_class`                 — dispatch
+#   * `render_to_md(parse_md(render_to_md(...))) == md`     — byte-stable
+#
+# The third assertion is the contract the markdown_io docstring promises
+# ("anything written through `render_to_md` and re-rendered after
+# `parse_md` is byte-identical"). A new dispatch entry missing from
+# `_SCHEMA_BY_DOC_TYPE` falls back to `Frontmatter` (extra="forbid") and
+# trips the round-trip identity for that doc-type.
+# --------------------------------------------------------------------------
+
+_SNAPSHOT_DIR = Path(__file__).parent / "schema_snapshots"
+
+_ALL_DOC_TYPE_FIXTURES: list[tuple[type[Frontmatter], str]] = [
+    (Passport, "passport"),
+    (DriverLicence, "driver_licence"),
+    (NationalID, "national_id"),
+    (Visa, "visa"),
+    (PaymentReceipt, "payment_receipt"),
+    (PEP_Declaration, "pep_declaration"),
+    (VerificationReport, "verification_report"),
+    (ApplicationForm, "application_form"),
+    (BankStatement, "bank_statement"),
+    (BankAccountConfirmation, "bank_account_confirmation"),
+    (CompanyExtract, "company_extract"),
+    (EntityOwnership, "entity_ownership"),
+    (ProofOfAddress, "proof_of_address"),
+    (TaxResidency, "tax_residency"),
+    (Other, "other"),
+]
+
+
+def _load_canonical(model_cls: type[Frontmatter], snapshot_name: str) -> Frontmatter:
+    yaml_text = (_SNAPSHOT_DIR / f"{snapshot_name}.yaml").read_text(encoding="utf-8")
+    return model_cls.model_validate(yaml.safe_load(yaml_text))
+
+
+@pytest.mark.parametrize(
+    "schema_class,snapshot_name",
+    _ALL_DOC_TYPE_FIXTURES,
+    ids=[name for _, name in _ALL_DOC_TYPE_FIXTURES],
+)
+def test_round_trip_all_15_doc_types(
+    schema_class: type[Frontmatter], snapshot_name: str
+) -> None:
+    """Every DOC_TYPES schema must survive `parse_md(render_to_md(...))`
+    byte-equal. A failure here means `_SCHEMA_BY_DOC_TYPE` is missing the
+    entry (parse falls back to `Frontmatter`, which has `extra="forbid"`
+    and rejects subclass-specific keys)."""
+    instance = _load_canonical(schema_class, snapshot_name)
+    md = render_to_md(instance)
+    parsed = parse_md(md)
+
+    assert type(parsed) is schema_class, (
+        f"{snapshot_name}: parse_md dispatched to {type(parsed).__name__}, "
+        f"expected {schema_class.__name__}. Add the entry to "
+        f"`markdown_io._SCHEMA_BY_DOC_TYPE`."
+    )
+    assert parsed == instance
+    assert render_to_md(parsed) == md

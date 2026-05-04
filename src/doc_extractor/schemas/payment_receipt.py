@@ -11,30 +11,24 @@ empty-string-not-null convention from `Frontmatter`.
 
 Deprecated fields (`receipt_counterparty_name`, `receipt_counterparty_account`)
 are kept for the FR27 one-quarter overlap window. They expire **2026-08-03**.
+The fields stay readable in old `.md` files written before the rename, but
+no auto-mapping happens on render or parse — direction (debit vs credit)
+depends on the payment flow and a static counterparty→credit mapping is
+wrong half the time.
 """
 from __future__ import annotations
-
-from typing import ClassVar
 
 from doc_extractor.schemas.base import Frontmatter
 
 
 class PaymentReceipt(Frontmatter):
-    """Payment-receipt extraction schema with FR27 deprecation registry.
+    """Payment-receipt extraction schema.
 
-    ``_deprecated_aliases`` (Story 7.1) maps deprecated alias field names to
-    their canonical replacements. ``markdown_io.render_to_md`` reads this map
-    and dual-emits both names during the overlap window;
-    ``markdown_io.parse_md`` falls back ``old → new`` when only the legacy
-    field is present. The aliases expire 2026-08-03 per FR27 — at that
-    point drop the deprecated fields, drop this map, and bump
+    The deprecated ``receipt_counterparty_*`` fields below are read-only
+    legacy slots for parsing pre-2026-05 ``.md`` files. They expire
+    2026-08-03 per FR27 — at that point drop the fields and bump
     ``extractor_version``.
     """
-
-    _deprecated_aliases: ClassVar[dict[str, str]] = {
-        "receipt_counterparty_name": "receipt_credit_account_name",
-        "receipt_counterparty_account": "receipt_credit_account_number",
-    }
 
     receipt_amount: str | None = ""
     receipt_currency: str | None = ""
@@ -53,10 +47,7 @@ class PaymentReceipt(Frontmatter):
 
     # ----- DEPRECATED aliases (FR27 overlap; window expires 2026-08-03) -----
     receipt_counterparty_name: str | None = ""
-    """DEPRECATED — overlap window expires 2026-08-03. Use receipt_debit_account_name
-    or receipt_credit_account_name instead. Populated alongside the new fields
-    during the overlap window so downstream consumers can migrate gradually."""
+    """DEPRECATED — read-only legacy slot for parsing pre-2026-05 .md files. Will be removed 2026-08-03 per FR27. Do not write new files with this field set."""
 
     receipt_counterparty_account: str | None = ""
-    """DEPRECATED — overlap window expires 2026-08-03. Use receipt_debit_account_number
-    or receipt_credit_account_number instead."""
+    """DEPRECATED — read-only legacy slot for parsing pre-2026-05 .md files. Will be removed 2026-08-03 per FR27. Do not write new files with this field set."""

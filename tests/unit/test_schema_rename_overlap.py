@@ -1,12 +1,16 @@
-"""Story 7.1 — schema-rename overlap mechanism (FR27 dual-emit).
+"""Story 7.1 — schema-rename overlap (FR27): NO auto-mapping.
 
-Tests the ``_deprecated_aliases`` ClassVar registry on
-:class:`PaymentReceipt` together with ``markdown_io``'s dual-emit on render
-and ``old → new`` fallback on parse. The deprecation window for the
-``receipt_counterparty_*`` fields expires 2026-08-03; the final test in
-this module is a date sentinel that auto-fails on expiry to force the
-cleanup decision (drop the deprecated fields, drop the registry, bump
-``extractor_version``). Same pattern as
+The earlier dual-emit / parse-fallback design was dropped in code review
+Round 1 (2026-05): a static ``counterparty → credit`` map is direction-
+wrong half the time because counterparty depends on whether the payment is
+inbound or outbound. Each ``.md`` file now has ONE shape — the deprecated
+``receipt_counterparty_*`` fields stay readable for old files but no
+auto-mapping happens on render or parse.
+
+The deprecation window for the ``receipt_counterparty_*`` fields expires
+2026-08-03; the final test in this module is a date sentinel that
+auto-fails on expiry to force the cleanup decision (drop the deprecated
+fields entirely and bump ``extractor_version``). Same pattern as
 ``test_payment_receipt_deprecated_overlap_window_not_yet_expired`` in
 ``test_schema_byte_stability.py``.
 """
@@ -30,7 +34,9 @@ def _yaml_body(rendered: str) -> dict[str, object]:
     return yaml.safe_load(parts[1]) or {}
 
 
-def test_render_dual_emits_when_only_new_field_set() -> None:
+def test_render_does_not_dual_emit_when_only_new_field_set() -> None:
+    """Setting only the new credit-side field must NOT auto-fill the
+    deprecated counterparty alias on render."""
     receipt = PaymentReceipt(
         doc_type="PaymentReceipt",
         receipt_credit_account_name="Alice",
@@ -38,15 +44,16 @@ def test_render_dual_emits_when_only_new_field_set() -> None:
     body = _yaml_body(render_to_md(receipt))
 
     assert body["receipt_credit_account_name"] == "Alice"
-    assert body["receipt_counterparty_name"] == "Alice"
-    # The other alias pair is empty on both sides — dual-emit should not
-    # invent a value where neither side has one.
+    assert body["receipt_counterparty_name"] == ""
     assert body["receipt_credit_account_number"] == ""
     assert body["receipt_counterparty_account"] == ""
 
 
-def test_render_dual_emits_when_only_legacy_field_set() -> None:
-    """Consumer-migration scenario: caller supplies only the deprecated alias."""
+def test_render_does_not_dual_emit_when_only_legacy_field_set() -> None:
+    """Setting only the deprecated counterparty alias must NOT auto-fill the
+    new credit-side field on render. Direction (debit vs credit) depends on
+    the payment flow — a static counterparty→credit map is wrong half the
+    time, so we leave each field in its own slot."""
     receipt = PaymentReceipt(
         doc_type="PaymentReceipt",
         receipt_counterparty_name="Bob",
@@ -55,12 +62,30 @@ def test_render_dual_emits_when_only_legacy_field_set() -> None:
     body = _yaml_body(render_to_md(receipt))
 
     assert body["receipt_counterparty_name"] == "Bob"
-    assert body["receipt_credit_account_name"] == "Bob"
     assert body["receipt_counterparty_account"] == "6217 **** **** 0083"
-    assert body["receipt_credit_account_number"] == "6217 **** **** 0083"
+    assert body["receipt_credit_account_name"] == ""
+    assert body["receipt_credit_account_number"] == ""
 
 
-def test_round_trip_preserves_new_shape_values() -> None:
+def test_render_preserves_both_when_both_populated() -> None:
+    """If a caller explicitly sets BOTH the new and legacy field names
+    (with disagreeing values), render keeps both verbatim — neither side
+    overrides the other. The agent supplied them; reconciliation is the
+    consumer's call."""
+    receipt = PaymentReceipt(
+        doc_type="PaymentReceipt",
+        receipt_credit_account_name="NewName",
+        receipt_counterparty_name="LegacyName",
+    )
+    body = _yaml_body(render_to_md(receipt))
+
+    assert body["receipt_credit_account_name"] == "NewName"
+    assert body["receipt_counterparty_name"] == "LegacyName"
+
+
+def test_round_trip_keeps_new_shape_in_its_own_slot() -> None:
+    """Render → parse: the new debit/credit fields stay in their own
+    slots — counterparty is NOT populated as a side-effect."""
     receipt = PaymentReceipt(
         doc_type="PaymentReceipt",
         receipt_amount="100.00",
@@ -74,14 +99,16 @@ def test_round_trip_preserves_new_shape_values() -> None:
     assert isinstance(parsed, PaymentReceipt)
     assert parsed.receipt_credit_account_name == "Charlie"
     assert parsed.receipt_credit_account_number == "1234-5678"
-    # Dual-emit propagated the value into the legacy field too.
-    assert parsed.receipt_counterparty_name == "Charlie"
-    assert parsed.receipt_counterparty_account == "1234-5678"
+    assert parsed.receipt_counterparty_name == ""
+    assert parsed.receipt_counterparty_account == ""
     assert parsed.receipt_amount == "100.00"
 
 
-def test_parse_falls_back_old_to_new_when_new_field_absent() -> None:
-    """A consumer still emitting only the legacy alias must round-trip."""
+def test_parse_does_not_copy_legacy_field_into_new_field() -> None:
+    """An old ``.md`` written before the rename must round-trip with the
+    counterparty values staying in the counterparty slot — parse_md does
+    NOT auto-coerce ``receipt_counterparty_*`` → ``receipt_credit_*``.
+    Each MD file has one shape; the consumer reads both slots."""
     legacy_md = (
         "---\n"
         "doc_type: PaymentReceipt\n"
@@ -92,13 +119,15 @@ def test_parse_falls_back_old_to_new_when_new_field_absent() -> None:
     parsed = parse_md(legacy_md)
 
     assert isinstance(parsed, PaymentReceipt)
-    assert parsed.receipt_credit_account_name == "Dave"
-    assert parsed.receipt_credit_account_number == "02-0248-0242329-02"
     assert parsed.receipt_counterparty_name == "Dave"
+    assert parsed.receipt_counterparty_account == "02-0248-0242329-02"
+    assert parsed.receipt_credit_account_name == ""
+    assert parsed.receipt_credit_account_number == ""
 
 
-def test_parse_disagreement_resolves_in_favour_of_new_field() -> None:
-    """If both old and new are populated and disagree, the new field wins."""
+def test_parse_keeps_disagreeing_values_in_their_own_slots() -> None:
+    """If both old and new are populated and disagree, both stay verbatim —
+    parse does not silently coerce one onto the other."""
     conflicted_md = (
         "---\n"
         "doc_type: PaymentReceipt\n"
@@ -110,17 +139,14 @@ def test_parse_disagreement_resolves_in_favour_of_new_field() -> None:
 
     assert isinstance(parsed, PaymentReceipt)
     assert parsed.receipt_credit_account_name == "Y"
-    # The legacy slot keeps its disagreeing value — render-time will dual-emit
-    # if asked, but parse does not silently overwrite the legacy field.
     assert parsed.receipt_counterparty_name == "X"
 
 
 def test_fr27_overlap_window_not_yet_expired() -> None:
-    """Sentinel: when the FR27 overlap closes, drop the deprecated fields,
-    drop ``_deprecated_aliases``, and bump ``extractor_version``. This test
-    fails on 2026-08-03 to force the cleanup decision."""
+    """Sentinel: when the FR27 overlap closes, drop the deprecated fields
+    from PaymentReceipt and bump ``extractor_version``. This test fails on
+    2026-08-03 to force the cleanup decision."""
     assert date.today() < FR27_EXPIRY, (
         "FR27 overlap window expired — drop receipt_counterparty_* "
-        "from PaymentReceipt and the _deprecated_aliases registry, then "
-        "bump extractor_version."
+        "from PaymentReceipt and bump extractor_version."
     )

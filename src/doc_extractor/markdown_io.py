@@ -18,9 +18,18 @@ from typing import Any
 import yaml  # type: ignore[import-untyped]  # dev-dep `types-PyYAML` not yet wired
 
 from doc_extractor.schemas import Frontmatter, Passport
+from doc_extractor.schemas.application_form import ApplicationForm
+from doc_extractor.schemas.bank_account_confirmation import BankAccountConfirmation
+from doc_extractor.schemas.bank_statement import BankStatement
 from doc_extractor.schemas.company_extract import CompanyExtract
 from doc_extractor.schemas.entity_ownership import EntityOwnership
+from doc_extractor.schemas.ids import DriverLicence, NationalID, Visa
+from doc_extractor.schemas.other import Other
 from doc_extractor.schemas.payment_receipt import PaymentReceipt
+from doc_extractor.schemas.pep_declaration import PEP_Declaration
+from doc_extractor.schemas.proof_of_address import ProofOfAddress
+from doc_extractor.schemas.tax_residency import TaxResidency
+from doc_extractor.schemas.verification_report import VerificationReport
 
 _FENCE = "---"
 
@@ -56,38 +65,29 @@ def _autofill_provenance(data: dict[str, Any]) -> None:
 # `Frontmatter` itself has `extra="forbid"`, so subclass-specific keys would
 # fail to validate against the base class. Dispatch on `doc_type` to the
 # matching subclass; unknown / empty doc_types fall back to `Frontmatter`.
+# Every DOC_TYPES literal must appear here — without an entry, parse_md
+# falls back to Frontmatter and rejects the subclass-specific keys (the
+# round-trip contract for `tests/unit/test_markdown_io_round_trip.py`
+# parametrizes across all 15). Listed manually rather than imported from
+# `agents.registry.FACTORIES` to avoid pulling agno + every specialist
+# into the schema-only import graph.
 _SCHEMA_BY_DOC_TYPE: dict[str, type[Frontmatter]] = {
     "Passport": Passport,
+    "DriverLicence": DriverLicence,
+    "NationalID": NationalID,
+    "Visa": Visa,
     "PaymentReceipt": PaymentReceipt,
-    # Story 5.3 — entity-document schemas need explicit dispatch so parse_md
-    # round-trips list[str] (directors / shareholders) and list[BaseModel]
-    # (ultimate_beneficial_owners) cleanly. Frontmatter base has
-    # extra="forbid" which would reject these subclass-specific keys on
-    # fallback, breaking the round-trip contract.
+    "PEP_Declaration": PEP_Declaration,
+    "VerificationReport": VerificationReport,
+    "ApplicationForm": ApplicationForm,
+    "BankStatement": BankStatement,
+    "BankAccountConfirmation": BankAccountConfirmation,
     "CompanyExtract": CompanyExtract,
     "EntityOwnership": EntityOwnership,
+    "ProofOfAddress": ProofOfAddress,
+    "TaxResidency": TaxResidency,
+    "Other": Other,
 }
-
-
-def _apply_deprecated_alias_dual_emit(
-    cls: type[Frontmatter], data: dict[str, Any]
-) -> None:
-    """Story 7.1 / FR27 — populate both old and new alias fields on render.
-
-    For each ``(old_name, new_name)`` pair declared on
-    ``cls._deprecated_aliases``: if either side has a non-empty value but
-    the other is empty, copy the value across. If both are present, leave
-    them — render keeps both even when they disagree (the agent supplied
-    them; reconciliation is the consumer's call).
-    """
-    aliases: dict[str, str] = getattr(cls, "_deprecated_aliases", {}) or {}
-    for old_name, new_name in aliases.items():
-        old_value = data.get(old_name)
-        new_value = data.get(new_name)
-        if new_value and not old_value:
-            data[old_name] = new_value
-        elif old_value and not new_value:
-            data[new_name] = old_value
 
 
 def render_to_md(frontmatter: Frontmatter) -> str:
@@ -103,7 +103,6 @@ def render_to_md(frontmatter: Frontmatter) -> str:
     """
     data = frontmatter.model_dump()
     _autofill_provenance(data)
-    _apply_deprecated_alias_dual_emit(type(frontmatter), data)
     body = yaml.safe_dump(
         data,
         allow_unicode=True,
@@ -130,15 +129,4 @@ def parse_md(text: str) -> Frontmatter:
         raise ValueError(f"frontmatter must be a mapping, got {type(data).__name__}")
 
     schema_class = _SCHEMA_BY_DOC_TYPE.get(str(data.get("doc_type", "")), Frontmatter)
-
-    # Story 7.1 / FR27 — read-side compat. Consumers still emitting only the
-    # deprecated alias get their value copied into the new field name before
-    # validation. When both are populated and disagree, the new field wins
-    # (the canonical source); we only fill in when new is missing/empty.
-    aliases: dict[str, str] = getattr(schema_class, "_deprecated_aliases", {}) or {}
-    for old_name, new_name in aliases.items():
-        old_value = data.get(old_name)
-        if old_value and not data.get(new_name):
-            data[new_name] = old_value
-
     return schema_class.model_validate(data)
